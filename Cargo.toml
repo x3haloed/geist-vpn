@@ -1,0 +1,46 @@
+[package]
+name = "geist-vpn"
+version = "0.1.0"
+description = "Modern Rust GUI for SoftEtherVPN"
+authors = ["You <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/x3haloed/geist-vpn"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+cmake = "0.1"
+
+[dependencies]
+# Tauri for cross-platform GUI
+tauri = { version = "2.0", features = ["shell-open"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+
+# FFI and unsafe code
+libc = "0.2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Configuration
+serde_yaml = "0.9"
+
+# Async runtime
+futures = "0.3"
+
+[features]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.release]
+panic = "abort"   # Strip costly panic clean-up logic
+codegen-units = 1 # Compile crates one by one so the compiler can optimize better
+lto = true        # Enables link-time optimization
+opt-level = "s"   # Optimize for binary size
+strip = true      # Strip debug symbols
