@@ -6,9 +6,9 @@ use geist_vpn::profile::VpnProfile;
 
 pub fn view<'a>(
     profiles: &'a [VpnProfile],
-    selected_profile: Option<&str>,
+    selected_profile: Option<&'a str>,
     connecting: bool,
-    connection_status: &ConnectionStatus,
+    connection_status: &'a ConnectionStatus,
 ) -> Element<'a, Message> {
     let title = text("Quick Connect")
         .size(18)

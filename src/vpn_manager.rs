@@ -33,12 +33,15 @@ pub struct VpnManager {
 impl VpnManager {
     /// Create a new VPN manager
     pub fn new() -> Result<Self, String> {
+        tracing::info!("VPN Manager: Creating new VPN manager");
         let (command_tx, command_rx) = mpsc::channel();
 
+        tracing::info!("VPN Manager: Spawning background thread");
         let handle = std::thread::spawn(move || {
             Self::run_manager(command_rx);
         });
 
+        tracing::info!("VPN Manager: Background thread spawned successfully");
         Ok(Self {
             command_tx,
             _handle: handle,
@@ -86,22 +89,21 @@ impl VpnManager {
 
     /// Run the VPN manager loop (called in dedicated thread)
     fn run_manager(command_rx: mpsc::Receiver<VpnCommand>) {
-        // Initialize SoftEther on this thread
-        if let Err(e) = geist_vpn::init() {
-            tracing::error!("Failed to initialize SoftEther in VPN manager thread: {}", e);
-            return;
-        }
+        tracing::info!("VPN Manager: Background thread started, creating SoftEther client");
 
-        // Create the SoftEther client
+        // Create the SoftEther client (this will initialize SoftEther if needed)
         let mut client = match SoftEtherClient::new() {
-            Ok(client) => client,
+            Ok(client) => {
+                tracing::info!("VPN Manager: SoftEther client created successfully");
+                client
+            }
             Err(e) => {
-                tracing::error!("Failed to create SoftEther client: {}", e);
+                tracing::error!("VPN Manager: Failed to create SoftEther client: {}", e);
                 return;
             }
         };
 
-        tracing::info!("VPN manager initialized and ready");
+        tracing::info!("VPN Manager: VPN manager initialized and ready, entering command loop");
 
         // Main command loop
         while let Ok(command) = command_rx.recv() {

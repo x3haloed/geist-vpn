@@ -32,13 +32,30 @@ fn main() {
     // Copy hamcore.se2 to the output directory so SoftEtherVPN can find it
     let hamcore_src = dst.join("build").join("hamcore.se2");
     let hamcore_dst = PathBuf::from("target").join("debug").join("hamcore.se2");
+    let hamcore_dst_root = PathBuf::from("hamcore.se2"); // Also copy to project root
 
     if hamcore_src.exists() {
         std::fs::copy(&hamcore_src, &hamcore_dst).unwrap_or_else(|e| {
-            panic!("Failed to copy hamcore.se2: {}", e);
+            panic!("Failed to copy hamcore.se2 to target/debug: {}", e);
+        });
+        std::fs::copy(&hamcore_src, &hamcore_dst_root).unwrap_or_else(|e| {
+            panic!("Failed to copy hamcore.se2 to project root: {}", e);
         });
     } else {
         panic!("hamcore.se2 not found at {}", hamcore_src.display());
+    }
+
+    // Create symlink a.out -> target/debug/geist-vpn for SoftEtherVPN executable detection
+    let exe_path = PathBuf::from("target").join("debug").join("geist-vpn");
+    let aout_link = PathBuf::from("a.out");
+    if exe_path.exists() {
+        // Remove existing symlink if it exists
+        let _ = std::fs::remove_file(&aout_link);
+        // Create new symlink (using relative path)
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&exe_path, &aout_link).unwrap_or_else(|e| {
+            panic!("Failed to create symlink a.out -> {}: {}", exe_path.display(), e);
+        });
     }
 
     // Link against the core SoftEtherVPN libraries (dynamic linking)

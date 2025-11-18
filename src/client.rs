@@ -35,20 +35,40 @@ enum ConnectionState {
 impl SoftEtherClient {
     /// Create a new SoftEther client instance
     pub fn new() -> Result<Self> {
+        tracing::info!("SoftEtherClient: Creating new SoftEther client");
+
         // Initialize SoftEther threading if not already done
+        tracing::info!("SoftEtherClient: Ensuring SoftEther is initialized");
         Self::ensure_softether_initialized()?;
+        tracing::info!("SoftEtherClient: SoftEther initialization complete");
 
         unsafe {
+            tracing::info!("SoftEtherClient: Calling CiNewClient()");
             let handle = crate::bindings::CiNewClient();
             if handle.is_null() {
+                tracing::error!("SoftEtherClient: CiNewClient() returned null handle");
                 return Err(Error::InitializationFailed {
                     message: "Failed to create SoftEther client".into(),
                 });
             }
+            tracing::info!("SoftEtherClient: CiNewClient() succeeded, handle: {:?}", handle);
+
+            // Initialize keep connection (from CtStartClient)
+            tracing::info!("SoftEtherClient: Calling CiInitKeep()");
+            crate::bindings::CiInitKeep(handle);
+            tracing::info!("SoftEtherClient: CiInitKeep() completed");
+
+            // Skip CiStartRpcServer() to avoid the hanging RPC thread
+
+            // Initialize saver (from CtStartClient)
+            tracing::info!("SoftEtherClient: Calling CiInitSaver()");
+            crate::bindings::CiInitSaver(handle);
+            tracing::info!("SoftEtherClient: CiInitSaver() completed");
 
             // Create broadcast channel for status updates (buffer size 16)
             let (status_tx, _) = broadcast::channel(16);
 
+            tracing::info!("SoftEtherClient: SoftEther client created successfully");
             Ok(Self {
                 client_handle: handle,
                 state: ConnectionState::Disconnected,
@@ -63,22 +83,29 @@ impl SoftEtherClient {
         use std::sync::Once;
         static INIT: Once = Once::new();
 
-        let init_result = Ok(());
+        tracing::info!("SoftEtherClient: ensure_softether_initialized() called");
+
+        let mut init_result = Ok(());
         INIT.call_once(|| {
-            // Skip FFI calls during tests
+            tracing::info!("SoftEtherClient: First time initialization, calling crate::init()");
+            // Initialize SoftEtherVPN library safely
+            // This is done lazily to avoid conflicts with GUI initialization
             #[cfg(not(test))]
-            unsafe {
-                // Start the client service (required for threading)
-                crate::bindings::CtStartClient();
-                tracing::info!("SoftEtherVPN client service started");
+            {
+                init_result = crate::init();
+                match &init_result {
+                    Ok(_) => tracing::info!("SoftEtherVPN library initialized successfully"),
+                    Err(e) => tracing::error!("Failed to initialize SoftEtherVPN library: {}", e),
+                }
             }
 
             #[cfg(test)]
             {
-                tracing::info!("SoftEtherVPN client service initialization skipped during tests");
+                tracing::info!("SoftEtherVPN library initialization skipped during tests");
             }
         });
 
+        tracing::info!("SoftEtherClient: ensure_softether_initialized() returning");
         init_result
     }
 

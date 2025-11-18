@@ -121,6 +121,7 @@ SoftEtherVPN/_deps
 *.lib
 *.exe
 *.pdb
+*.out
 
 # Build artifacts in src/
 SoftEtherVPN/src/bin/

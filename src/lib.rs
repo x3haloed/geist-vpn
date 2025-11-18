@@ -35,29 +35,36 @@ pub fn init() -> Result<()> {
     // Skip actual initialization during tests to avoid FFI issues
     #[cfg(not(test))]
     {
-        // Get the current executable path
-        let exe_path = std::env::current_exe()
-            .map_err(|e| Error::IoError(e))?
-            .to_string_lossy()
-            .to_string();
+        tracing::info!("SoftEther init: Starting SoftEtherVPN library initialization");
+
+        // Note: SoftEtherVPN expects executable detection to work properly
 
         // Initialize SoftEtherVPN internals
         // This will call the appropriate FFI functions
         unsafe {
-            // Set the executable name first (this is normally done in main() with argv[0])
-            let exe_path_cstr = std::ffi::CString::new(exe_path)
-                .map_err(|_| Error::Other("Invalid executable path".to_string()))?;
-            bindings::InitGetExeName(exe_path_cstr.as_ptr() as *mut i8);
-
-            // Initialize Mayaqua (includes OS-specific setup like locks, resource limits)
+            tracing::info!("SoftEther init: Calling InitMayaqua()");
+            // Initialize Mayaqua first (includes OS-specific setup like locks, resource limits)
             // This matches what the official vpnclient does in UnixServiceMain
             bindings::InitMayaqua(false, false, 0, std::ptr::null_mut());
+            tracing::info!("SoftEther init: InitMayaqua() completed");
 
+            tracing::info!("SoftEther init: Calling InitGetExeName()");
+            // Set the executable name (pass NULL to default to "./a.out")
+            // InitGetExeName must be called after InitMayaqua according to SoftEtherVPN source
+            bindings::InitGetExeName(std::ptr::null_mut());
+            tracing::info!("SoftEther init: InitGetExeName() completed");
+
+            tracing::info!("SoftEther init: Calling InitCedar()");
             // Initialize Cedar VPN library
             bindings::InitCedar();
+            tracing::info!("SoftEther init: InitCedar() completed");
 
-            // Start the SoftEther client service
-            bindings::CtStartClient();
+            tracing::info!("SoftEther init: Skipping CtStartClient() to avoid RPC server hang");
+            // Instead of calling CtStartClient() which includes RPC server that hangs,
+            // we'll manually initialize what we need:
+            // - Client is created by CtStartClient -> we'll handle this in SoftEtherClient::new
+            // - RPC server is started by CtStartClient -> we'll skip this entirely
+            tracing::info!("SoftEther init: CtStartClient() skipped (RPC server disabled)");
         }
 
         tracing::info!("SoftEtherVPN library initialized");

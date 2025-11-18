@@ -36,6 +36,12 @@ extern "C" {
     /// Create a new VPN client instance
     pub fn CiNewClient() -> *mut c_void;
 
+    /// Initialize keep connection for client
+    pub fn CiInitKeep(client: *mut c_void);
+
+    /// Initialize saver for client
+    pub fn CiInitSaver(client: *mut c_void);
+
     /// Free a VPN client instance
     pub fn CtReleaseClient(client: *mut c_void);
 

@@ -4,10 +4,12 @@ use iced::{Color, Theme};
 use tracing_subscriber;
 
 mod ui;
+mod vpn_manager;
 
 use geist_vpn::profile::{ProfileManager, VpnProfile};
 use std::sync::Arc;
-use geist_vpn::{init, cleanup, client::SoftEtherClient};
+use geist_vpn::{init, cleanup};
+use vpn_manager::VpnManager;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -15,6 +17,7 @@ pub enum Message {
     Connect(String),
     Disconnect,
     ConnectionResult(Result<(), String>),
+    PollStatus,
 
     // Profile management messages
     LoadProfiles,
@@ -79,7 +82,7 @@ pub struct GeistApp {
 
     // UI state
     profile_manager: Option<Arc<ProfileManager>>,
-    vpn_client: Option<Box<SoftEtherClient>>,
+    vpn_manager: Option<VpnManager>,
     loading_profiles: bool,
     connecting: bool,
 
@@ -96,7 +99,7 @@ impl Default for GeistApp {
             profiles: Vec::new(),
             current_view: ViewMode::All,
             profile_manager: None,
-            vpn_client: None,
+            vpn_manager: None,
             loading_profiles: false,
             connecting: false,
             show_profile_modal: false,
@@ -107,22 +110,34 @@ impl Default for GeistApp {
 
 impl GeistApp {
     fn new() -> (Self, Task<Message>) {
+        tracing::info!("GeistApp: Starting app initialization");
         let mut app = Self::default();
 
-        // Initialize SoftEther in the main thread - DISABLED FOR TESTING
-        // if let Err(e) = init() {
-        //     tracing::error!("Failed to initialize SoftEther: {}", e);
-        // }
-
+        tracing::info!("GeistApp: Initializing profile manager");
         // Initialize profile manager
         match ProfileManager::new() {
             Ok(manager) => {
                 app.profile_manager = Some(Arc::new(manager));
+                tracing::info!("GeistApp: Profile manager initialized successfully");
             }
             Err(e) => {
-                tracing::error!("Failed to initialize profile manager: {}", e);
+                tracing::error!("GeistApp: Failed to initialize profile manager: {}", e);
             }
         }
+
+        tracing::info!("GeistApp: Initializing VPN manager");
+        // Initialize VPN manager
+        match VpnManager::new() {
+            Ok(manager) => {
+                app.vpn_manager = Some(manager);
+                tracing::info!("GeistApp: VPN manager initialized successfully");
+            }
+            Err(e) => {
+                tracing::error!("GeistApp: Failed to initialize VPN manager: {}", e);
+            }
+        }
+
+        tracing::info!("GeistApp: App initialization complete");
 
         (app, iced::Task::perform(async { Message::LoadProfiles }, |_| Message::LoadProfiles))
     }
@@ -141,30 +156,12 @@ impl GeistApp {
                     }
                 };
 
-                let result = if let Some(client) = &mut self.vpn_client {
-                    // Perform the connection operation synchronously in the main thread
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            client.connect(&profile).await
-                        })
-                    }).map_err(|e| format!("Connection failed: {}", e))
+                // Use VPN manager for connection (runs in separate thread, non-blocking)
+                let result = if let Some(vpn_manager) = &self.vpn_manager {
+                    vpn_manager.connect(profile)
+                        .map_err(|e| format!("Connection failed: {}", e))
                 } else {
-                    // Lazy initialization of VPN client
-                    match SoftEtherClient::new() {
-                        Ok(new_client) => {
-                            self.vpn_client = Some(Box::new(new_client));
-                            if let Some(client) = &mut self.vpn_client {
-                                tokio::task::block_in_place(|| {
-                                    tokio::runtime::Handle::current().block_on(async {
-                                        client.connect(&profile).await
-                                    })
-                                }).map_err(|e| format!("Connection failed: {}", e))
-                            } else {
-                                Err("Failed to initialize VPN client".to_string())
-                            }
-                        }
-                        Err(e) => Err(format!("Failed to create VPN client: {}", e)),
-                    }
+                    Err("VPN manager not initialized".to_string())
                 };
 
                 iced::Task::perform(async { result }, |result| Message::ConnectionResult(result))
@@ -173,15 +170,12 @@ impl GeistApp {
             Message::Disconnect => {
                 self.connecting = true;
 
-                let result = if let Some(client) = &mut self.vpn_client {
-                    // Perform the disconnection operation synchronously in the main thread
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            client.disconnect().await
-                        })
-                    }).map_err(|e| format!("Disconnection failed: {}", e))
+                // Use VPN manager for disconnection (runs in separate thread, non-blocking)
+                let result = if let Some(vpn_manager) = &self.vpn_manager {
+                    vpn_manager.disconnect()
+                        .map_err(|e| format!("Disconnection failed: {}", e))
                 } else {
-                    Err("VPN client not initialized".to_string())
+                    Err("VPN manager not initialized".to_string())
                 };
 
                 iced::Task::perform(async { result }, |result| Message::ConnectionResult(result))
@@ -191,55 +185,8 @@ impl GeistApp {
                 self.connecting = false;
                 match result {
                     Ok(_) => {
-                        // Get the real connection status from VPN client
-                        let status = if let Some(client) = &self.vpn_client {
-                            // Convert client status to UI status
-                            match client.get_status() {
-                                geist_vpn::client::ConnectionStatus::Disconnected => {
-                                    ConnectionStatus {
-                                        connected: false,
-                                        profile_name: None,
-                                        status_message: "Disconnected".to_string(),
-                                    }
-                                }
-                                geist_vpn::client::ConnectionStatus::Connecting => {
-                                    ConnectionStatus {
-                                        connected: false,
-                                        profile_name: client.active_profile().map(|p| p.name.clone()),
-                                        status_message: "Connecting...".to_string(),
-                                    }
-                                }
-                                geist_vpn::client::ConnectionStatus::Connected => {
-                                    ConnectionStatus {
-                                        connected: true,
-                                        profile_name: client.active_profile().map(|p| p.name.clone()),
-                                        status_message: "Connected".to_string(),
-                                    }
-                                }
-                                geist_vpn::client::ConnectionStatus::Disconnecting => {
-                                    ConnectionStatus {
-                                        connected: true,
-                                        profile_name: client.active_profile().map(|p| p.name.clone()),
-                                        status_message: "Disconnecting...".to_string(),
-                                    }
-                                }
-                                geist_vpn::client::ConnectionStatus::Error(msg) => {
-                                    ConnectionStatus {
-                                        connected: false,
-                                        profile_name: None,
-                                        status_message: format!("Error: {}", msg),
-                                    }
-                                }
-                            }
-                        } else {
-                            ConnectionStatus {
-                                connected: false,
-                                profile_name: None,
-                                status_message: "VPN client not initialized".to_string(),
-                            }
-                        };
-
-                        return iced::Task::perform(async { Message::StatusUpdated(status) }, |msg| msg);
+                        // Status will be updated via subscription polling
+                        // For immediate feedback, we could trigger a status update here
                     }
                     Err(error) => {
                         self.connection_status = ConnectionStatus {
@@ -248,6 +195,32 @@ impl GeistApp {
                             status_message: format!("Operation failed: {}", error),
                         };
                     }
+                }
+                iced::Task::none()
+            }
+
+            Message::PollStatus => {
+                // Get status from VPN manager
+                if let Some(vpn_manager) = &self.vpn_manager {
+                    match vpn_manager.get_status() {
+                        Ok(status) => {
+                            self.connection_status = status;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to get VPN status: {}", e);
+                            self.connection_status = ConnectionStatus {
+                                connected: false,
+                                profile_name: None,
+                                status_message: format!("Status check failed: {}", e),
+                            };
+                        }
+                    }
+                } else {
+                    self.connection_status = ConnectionStatus {
+                        connected: false,
+                        profile_name: None,
+                        status_message: "VPN manager not available".to_string(),
+                    };
                 }
                 iced::Task::none()
             }
@@ -478,17 +451,9 @@ impl GeistApp {
 
     fn subscription(&self) -> Subscription<Message> {
         // Poll VPN status every 2 seconds for real-time updates
-        if self.vpn_client.is_some() {
+        if self.vpn_manager.is_some() {
             iced::time::every(std::time::Duration::from_secs(2))
-                .map(|_| {
-                    // In a real implementation, we'd get the actual status
-                    // For now, just indicate polling is active
-                    Message::StatusUpdated(ConnectionStatus {
-                        connected: false,
-                        profile_name: None,
-                        status_message: "Status monitoring active".to_string(),
-                    })
-                })
+                .map(|_| Message::PollStatus)
         } else {
             Subscription::none()
         }
