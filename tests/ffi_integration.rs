@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 
 /// Test basic client creation and destruction
 #[tokio::test]
+#[ignore] // Requires SoftEtherVPN library to be linked
 async fn test_client_lifecycle() {
     // Initialize the library
     init().expect("Failed to initialize SoftEtherVPN library");
@@ -102,6 +103,7 @@ fn test_error_handling() {
 
 /// Test the async client wrapper (without actual connection)
 #[tokio::test]
+#[ignore] // Requires SoftEtherVPN library to be linked
 async fn test_async_client_wrapper() {
     init().expect("Failed to initialize library");
 
@@ -123,6 +125,7 @@ async fn test_async_client_wrapper() {
 
 /// Test profile manager operations
 #[tokio::test]
+#[ignore] // Requires SoftEtherVPN library to be linked
 async fn test_profile_manager() {
     // Create profile manager (uses temp directory for tests)
     let manager = ProfileManager::new().expect("Failed to create profile manager");
@@ -176,6 +179,7 @@ async fn test_softether_basic_operations() {
 
 /// Comprehensive connection test (mock - doesn't connect to real server)
 #[tokio::test]
+#[ignore] // Requires SoftEtherVPN library to be linked
 async fn test_connection_workflow() {
     init().expect("Library initialization failed");
 

@@ -23,18 +23,26 @@ fn main() {
     let dst = cmake_config.build();
 
     // Tell cargo where to find the built libraries
-    println!("cargo:rustc-link-search=native={}", dst.display());
+    let lib_dir = dst.join("lib");
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
-    // Link against the core SoftEtherVPN static libraries
-    println!("cargo:rustc-link-lib=static=cedar");
-    println!("cargo:rustc-link-lib=static=mayaqua");
+    // Link against the core SoftEtherVPN libraries (dynamic for now)
+    println!("cargo:rustc-link-lib=dylib=cedar");
+    println!("cargo:rustc-link-lib=dylib=mayaqua");
 
     // Additional system libraries that SoftEtherVPN depends on
+    // Use pkg-config for OpenSSL if available, otherwise link manually
+    if pkg_config::Config::new().probe("openssl").is_ok() {
+        // pkg-config found OpenSSL
+    } else {
+        // Fallback: manually link OpenSSL libraries
+        println!("cargo:rustc-link-lib=dylib=crypto");
+        println!("cargo:rustc-link-lib=dylib=ssl");
+    }
+
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-link-lib=dylib=m");
-    println!("cargo:rustc-link-lib=dylib=crypto");
-    println!("cargo:rustc-link-lib=dylib=ssl");
 
     // macOS specific libraries
     if env::var("CARGO_CFG_TARGET_OS").unwrap() == "macos" {

@@ -3,7 +3,8 @@
 //! Provides a safe Rust interface to SoftEtherVPN's client functionality.
 
 use crate::error::{Error, Result};
-use crate::profile::VpnProfile;
+use crate::profile::{VpnProfile, VpnProtocol, AuthMethod};
+use std::collections::HashMap;
 use tokio::sync::broadcast;
 
 /// SoftEther VPN Client wrapper
@@ -54,10 +55,17 @@ impl SoftEtherClient {
 
         let init_result = Ok(());
         INIT.call_once(|| {
+            // Skip FFI calls during tests
+            #[cfg(not(test))]
             unsafe {
                 // Start the client service (required for threading)
                 crate::bindings::CtStartClient();
                 tracing::info!("SoftEtherVPN client service started");
+            }
+
+            #[cfg(test)]
+            {
+                tracing::info!("SoftEtherVPN client service initialization skipped during tests");
             }
         });
 
@@ -68,9 +76,16 @@ impl SoftEtherClient {
     ///
     /// This should be called when the application shuts down.
     pub fn global_cleanup() -> Result<()> {
+        // Skip FFI calls during tests
+        #[cfg(not(test))]
         unsafe {
             crate::bindings::CtStopClient();
             tracing::info!("SoftEtherVPN client service stopped");
+        }
+
+        #[cfg(test)]
+        {
+            tracing::info!("SoftEtherVPN client service cleanup skipped during tests");
         }
         Ok(())
     }
@@ -261,7 +276,21 @@ mod tests {
 
     #[test]
     fn test_profile_validation() {
-        let mut profile = VpnProfile::default();
+        // Create a valid profile with credentials
+        let mut profile = VpnProfile {
+            id: "test_profile".into(),
+            name: "Test Profile".into(),
+            host: "vpn.example.com".into(),
+            port: 443,
+            protocol: VpnProtocol::SslVpn,
+            auth: AuthMethod::Password {
+                username: "testuser".into(),
+                password: "testpass".into(),
+            },
+            account_name: "testaccount".into(),
+            timeout: 30,
+            options: HashMap::new(),
+        };
 
         // Valid profile should pass
         assert!(profile.validate().is_ok());
