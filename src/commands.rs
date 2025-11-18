@@ -196,6 +196,6 @@ pub fn get_system_info() -> serde_json::Value {
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "version": crate::VERSION,
-        "softether_version": crate::bindings::get_version().unwrap_or_else(|| "Unknown".into())
+        "softether_version": "Not yet implemented"
     })
 }

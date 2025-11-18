@@ -13,7 +13,7 @@ cmake = "0.1"
 
 [dependencies]
 # Tauri for cross-platform GUI
-tauri = { version = "2.0", features = ["shell-open"] }
+tauri = { version = "2.0", features = ["shell-open", "tray-icon"] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
