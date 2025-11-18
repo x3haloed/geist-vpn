@@ -61,26 +61,33 @@ fn test_cedar_init() {
     }
 }
 
-/// Test client service initialization
+/// Test client service initialization following vpnclient pattern
 /// TODO: This currently crashes in CtStartClient - needs further investigation
 #[test]
 #[ignore = "CtStartClient causes segmentation fault - needs debugging"]
 fn test_client_start() {
-    println!("Testing client service initialization...");
+    println!("Testing client service initialization following vpnclient pattern...");
 
     unsafe {
+        // This mimics the vpnclient service initialization order
+        println!("=== Process Initialization (main) ===");
         println!("Calling InitProcessCallOnce...");
         geist_vpn::bindings::InitProcessCallOnce();
         println!("InitProcessCallOnce succeeded");
 
+        println!("\n=== Service Start (StartProcess) ===");
         println!("Calling InitCedar...");
         geist_vpn::bindings::InitCedar();
         println!("InitCedar succeeded");
 
-        println!("Calling CtStartClient...");
+        println!("Calling CtStartClient (this starts threads)...");
         geist_vpn::bindings::CtStartClient();
         println!("CtStartClient succeeded");
 
+        // Give threads time to initialize
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        println!("\n=== Service Stop (StopProcess) ===");
         println!("Calling CtStopClient...");
         geist_vpn::bindings::CtStopClient();
         println!("CtStopClient succeeded");
@@ -91,6 +98,66 @@ fn test_client_start() {
     }
 }
 
+/// Test step-by-step initialization to isolate crash location
+#[test]
+fn test_step_by_step_initialization() {
+    println!("Testing step-by-step initialization...");
+
+    unsafe {
+        println!("Step 1: InitMayaqua (includes OS-specific setup)");
+        geist_vpn::bindings::InitMayaqua(false, false, 0, std::ptr::null_mut());
+        println!("✓ InitMayaqua succeeded");
+
+        println!("Step 2: InitCedar");
+        geist_vpn::bindings::InitCedar();
+        println!("✓ InitCedar succeeded");
+
+        // Test if we can access basic functions before client creation
+        println!("Step 3: Testing basic function availability");
+        // Just check if the library is loaded by trying a simple function
+        println!("✓ Library appears to be loaded");
+
+        println!("Step 4: Attempting CtStartClient (this may crash)");
+        geist_vpn::bindings::CtStartClient();
+        println!("✓ CtStartClient succeeded - this should not print if it crashes");
+
+        println!("Step 5: CtStopClient");
+        geist_vpn::bindings::CtStopClient();
+        println!("✓ CtStopClient succeeded");
+
+        println!("Step 6: FreeCedar");
+        geist_vpn::bindings::FreeCedar();
+        println!("✓ FreeCedar succeeded");
+    }
+}
+
+/// Test if the issue is with direct CiNewClient calls
+/// Based on code analysis, CiNewClient might be internal-only
+#[test]
+#[ignore = "CiNewClient appears to be internal function - causes segfault"]
+fn test_direct_cinewclient_call() {
+    println!("Testing direct CiNewClient call (this may crash)...");
+
+    unsafe {
+        println!("InitMayaqua...");
+        geist_vpn::bindings::InitMayaqua(false, false, 0, std::ptr::null_mut());
+        println!("InitCedar...");
+        geist_vpn::bindings::InitCedar();
+
+        println!("CiNewClient (this crashes)...");
+        let client_ptr = geist_vpn::bindings::CiNewClient();
+        println!("CiNewClient returned: {:?}", client_ptr);
+
+        if !client_ptr.is_null() {
+            println!("CtReleaseClient...");
+            geist_vpn::bindings::CtReleaseClient(client_ptr);
+        }
+
+        println!("FreeCedar...");
+        geist_vpn::bindings::FreeCedar();
+    }
+}
+
 /// Test memory management with SoftEther allocators
 #[test]
 fn test_memory_allocation() {
@@ -98,8 +165,8 @@ fn test_memory_allocation() {
 
     // For integration tests, we need to actually initialize the library
     unsafe {
-        println!("Initializing process...");
-        geist_vpn::bindings::InitProcessCallOnce();
+        println!("Initializing Mayaqua...");
+        geist_vpn::bindings::InitMayaqua(false, false, 0, std::ptr::null_mut());
         println!("Initializing cedar...");
         geist_vpn::bindings::InitCedar();
         println!("Starting client...");

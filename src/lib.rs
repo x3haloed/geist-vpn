@@ -30,10 +30,13 @@ pub fn init() -> Result<()> {
         // Initialize SoftEtherVPN internals
         // This will call the appropriate FFI functions
         unsafe {
-            // Initialize process-wide state
-            bindings::InitProcessCallOnce();
+            // Initialize Mayaqua (includes OS-specific setup like locks, resource limits)
+            // This matches what the official vpnclient does in UnixServiceMain
+            bindings::InitMayaqua(false, false, 0, std::ptr::null_mut());
+
             // Initialize Cedar VPN library
             bindings::InitCedar();
+
             // Start the SoftEther client service
             bindings::CtStartClient();
         }

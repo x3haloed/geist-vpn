@@ -3,7 +3,7 @@
 //! This module contains the unsafe foreign function interface declarations
 //! for interacting with the SoftEtherVPN C libraries.
 
-use std::os::raw::{c_char, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 // Basic types from SoftEther
 pub type UINT = c_uint;
@@ -148,6 +148,9 @@ pub struct RPC_CLIENT_GET_ACCOUNT {
 
 // Library initialization
 extern "C" {
+    /// Initialize Mayaqua library (includes OS-specific setup)
+    pub fn InitMayaqua(memcheck: bool, debug: bool, argc: c_int, argv: *mut *mut c_char);
+
     /// Initialize process-wide state (Mayaqua)
     pub fn InitProcessCallOnce();
 

@@ -42,6 +42,10 @@ dirs = "5.0"
 [features]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[example]]
+name = "standalone_test"
+path = "examples/standalone_test.rs"
+
 [profile.release]
 panic = "abort"   # Strip costly panic clean-up logic
 codegen-units = 1 # Compile crates one by one so the compiler can optimize better
