@@ -246,6 +246,7 @@ impl Drop for SoftEtherClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory;
 
     #[test]
     fn test_client_creation() {
@@ -265,5 +266,49 @@ mod tests {
         // Invalid profile should fail
         profile.name = String::new();
         assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn test_memory_management() {
+        // Test our memory management bridge
+        let mem_result = memory::malloc_raw(64);
+        assert!(mem_result.is_ok(), "Failed to allocate memory");
+
+        let mem = mem_result.unwrap();
+        assert_eq!(mem.size(), 64);
+        assert!(!mem.as_ptr().is_null());
+
+        // Memory is automatically freed when mem goes out of scope
+    }
+
+    #[test]
+    fn test_string_conversion() {
+        // Test string conversion utilities
+        let test_str = "Test VPN Connection";
+        let wide_result = memory::strings::rust_to_softether_wide(test_str);
+        assert!(wide_result.is_ok(), "Failed to convert string to wide format");
+
+        let wide_str = wide_result.unwrap();
+        let back_to_rust = memory::strings::softether_wide_to_rust(&wide_str);
+        assert_eq!(test_str, back_to_rust);
+    }
+
+    #[test]
+    fn test_connection_status() {
+        // Test that we can create a client and check status
+        // Note: This would normally require SoftEtherVPN to be compiled
+        // For now, we test the data structures
+
+        let status = ConnectionStatus::Disconnected;
+        assert!(!format!("{:?}", status).is_empty());
+    }
+
+    #[test]
+    fn test_error_handling() {
+        // Test error creation and handling
+        let error = crate::Error::ConnectionFailed {
+            message: "Test connection failed".into(),
+        };
+        assert!(error.to_string().contains("Test connection failed"));
     }
 }
