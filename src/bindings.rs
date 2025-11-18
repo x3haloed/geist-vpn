@@ -3,13 +3,13 @@
 //! This module contains the unsafe foreign function interface declarations
 //! for interacting with the SoftEtherVPN C libraries.
 
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::os::raw::{c_char, c_uint, c_void};
 
 // Basic types from SoftEther
 pub type UINT = c_uint;
 pub type UINT64 = u64;
 pub type UCHAR = u8;
-pub type bool = std::os::raw::c_uchar; // SoftEther uses UCHAR for bool
+pub type SoftEtherBool = std::os::raw::c_uchar; // SoftEther uses UCHAR for bool
 
 // Maximum string lengths (from SoftEther constants)
 pub const MAX_ACCOUNT_NAME_LEN: usize = 127;
@@ -49,14 +49,14 @@ extern "C" {
     pub fn CtConnect(
         client: *mut c_void,
         connect_req: *mut RPC_CLIENT_CONNECT,
-    ) -> bool;
+    ) -> SoftEtherBool;
 
     /// Disconnect from VPN server
     pub fn CtDisconnect(
         client: *mut c_void,
         connect_req: *mut RPC_CLIENT_CONNECT,
-        inner: bool,
-    ) -> bool;
+        inner: SoftEtherBool,
+    ) -> SoftEtherBool;
 
     /// Get connection status
     pub fn CtGetAccountStatus(
@@ -199,11 +199,11 @@ pub fn to_c_string(s: &str) -> Result<std::ffi::CString, std::ffi::NulError> {
 }
 
 /// Convert Rust string to wide char array (UTF-16)
-pub fn to_wide_string(s: &str, buffer: &mut [u16]) -> Result<(), std::ffi::NulError> {
+pub fn to_wide_string(s: &str, buffer: &mut [u16]) -> Result<(), Box<dyn std::error::Error>> {
     let wide_chars: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
 
     if wide_chars.len() > buffer.len() {
-        return Err(std::ffi::NulError);
+        return Err("String too long for buffer".into());
     }
 
     buffer[..wide_chars.len()].copy_from_slice(&wide_chars);

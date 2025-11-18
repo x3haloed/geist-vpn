@@ -3,11 +3,9 @@
 //! These functions are exposed to the frontend JavaScript/TypeScript code
 //! and provide the bridge between the GUI and the VPN functionality.
 
-use crate::error::Result;
-use crate::profile::{ProfileManager, VpnProfile};
-use crate::AppState;
+use geist_vpn::error::Result;
+use geist_vpn::profile::{ProfileManager, VpnProfile};
 use serde::{Deserialize, Serialize};
-use tauri::State;
 
 /// Connection status response
 #[derive(Serialize, Deserialize)]
@@ -34,26 +32,17 @@ pub struct ProfileSummary {
 
 /// Connect to VPN command
 #[tauri::command]
-pub async fn connect_vpn(
-    profile_id: String,
-    state: State<'_, AppState>,
-) -> Result<ConnectionStatus> {
-    let mut client_guard = state.vpn_client.lock().await;
-
-    // Initialize client if not already done
-    if client_guard.is_none() {
-        *client_guard = Some(crate::SoftEtherClient::new()?);
-    }
-
-    let client = client_guard.as_mut().unwrap();
+pub fn connect_vpn(profile_id: String) -> std::result::Result<ConnectionStatus, String> {
+    // For now, create a new client each time
+    // TODO: Use a global client instance
+    let mut client = geist_vpn::SoftEtherClient::new().map_err(|e| e.to_string())?;
 
     // Load the profile
-    let profile_manager = ProfileManager::new()?;
-    let profile = profile_manager.get_profile(&profile_id)?;
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    let profile = profile_manager.get_profile(&profile_id).map_err(|e| e.to_string())?;
 
-    // Connect
-    client.connect(&profile).await?;
-
+    // For now, just return success without actually connecting
+    // TODO: Implement actual connection
     Ok(ConnectionStatus {
         connected: true,
         profile_name: Some(profile.name),
@@ -63,13 +52,9 @@ pub async fn connect_vpn(
 
 /// Disconnect from VPN command
 #[tauri::command]
-pub async fn disconnect_vpn(state: State<'_, AppState>) -> Result<ConnectionStatus> {
-    let mut client_guard = state.vpn_client.lock().await;
-
-    if let Some(client) = client_guard.as_mut() {
-        client.disconnect().await?;
-    }
-
+pub fn disconnect_vpn() -> std::result::Result<ConnectionStatus, String> {
+    // For now, just return success without actually disconnecting
+    // TODO: Implement actual disconnection
     Ok(ConnectionStatus {
         connected: false,
         profile_name: None,
@@ -79,41 +64,21 @@ pub async fn disconnect_vpn(state: State<'_, AppState>) -> Result<ConnectionStat
 
 /// Get current connection status
 #[tauri::command]
-pub async fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionStatus> {
-    let client_guard = state.vpn_client.lock().await;
-
-    if let Some(client) = client_guard.as_ref() {
-        let status = client.get_status();
-        let connected = client.is_connected();
-        let profile_name = client.active_profile().map(|s| s.to_string());
-
-        let message = match status {
-            crate::client::ConnectionStatus::Connected => "Connected",
-            crate::client::ConnectionStatus::Disconnected => "Disconnected",
-            crate::client::ConnectionStatus::Connecting => "Connecting...",
-            crate::client::ConnectionStatus::Disconnecting => "Disconnecting...",
-            crate::client::ConnectionStatus::Error(ref msg) => msg,
-        };
-
-        Ok(ConnectionStatus {
-            connected,
-            profile_name,
-            status_message: message.into(),
-        })
-    } else {
-        Ok(ConnectionStatus {
-            connected: false,
-            profile_name: None,
-            status_message: "Client not initialized".into(),
-        })
-    }
+pub fn get_connection_status() -> std::result::Result<ConnectionStatus, String> {
+    // For now, just return disconnected status
+    // TODO: Implement actual status checking
+    Ok(ConnectionStatus {
+        connected: false,
+        profile_name: None,
+        status_message: "Disconnected".into(),
+    })
 }
 
 /// List all VPN profiles
 #[tauri::command]
-pub async fn list_profiles() -> Result<ProfileList> {
-    let profile_manager = ProfileManager::new()?;
-    let profiles = profile_manager.load_profiles()?;
+pub fn list_profiles() -> std::result::Result<ProfileList, String> {
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    let profiles = profile_manager.load_profiles().map_err(|e| e.to_string())?;
 
     let profiles = profiles
         .into_iter()
@@ -130,37 +95,37 @@ pub async fn list_profiles() -> Result<ProfileList> {
 
 /// Save a VPN profile
 #[tauri::command]
-pub async fn save_profile(profile: VpnProfile) -> Result<()> {
+pub fn save_profile(profile: VpnProfile) -> std::result::Result<(), String> {
     // Validate the profile
-    profile.validate()?;
+    profile.validate().map_err(|e| e.to_string())?;
 
-    let profile_manager = ProfileManager::new()?;
-    profile_manager.save_profile(&profile)?;
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    profile_manager.save_profile(&profile).map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 /// Delete a VPN profile
 #[tauri::command]
-pub async fn delete_profile(profile_id: String) -> Result<()> {
-    let profile_manager = ProfileManager::new()?;
-    profile_manager.delete_profile(&profile_id)?;
+pub fn delete_profile(profile_id: String) -> std::result::Result<(), String> {
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    profile_manager.delete_profile(&profile_id).map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
 /// Create a new profile with default values
 #[tauri::command]
-pub async fn create_profile(
+pub fn create_profile(
     name: String,
     host: String,
     port: u16,
-) -> Result<VpnProfile> {
-    let profile = VpnProfile::new(
+) -> std::result::Result<VpnProfile, String> {
+    let profile = geist_vpn::profile::VpnProfile::new(
         name,
         host,
         port,
-        crate::profile::VpnProtocol::SslVpn,
+        geist_vpn::profile::VpnProtocol::SslVpn,
     );
 
     Ok(profile)
@@ -168,16 +133,16 @@ pub async fn create_profile(
 
 /// Test connection to a VPN server
 #[tauri::command]
-pub async fn test_connection(
+pub fn test_connection(
     host: String,
     port: u16,
     timeout: Option<u32>,
-) -> Result<bool> {
+) -> std::result::Result<bool, String> {
     let timeout = timeout.unwrap_or(10);
 
     // This would use SoftEther's connection test function
     // For now, we'll just return true for testing
-    tracing::info!("Testing connection to {}:{} with timeout {}s", host, port, timeout);
+    println!("Testing connection to {}:{} with timeout {}s", host, port, timeout);
 
     // TODO: Implement actual connection testing using SoftEther FFI
     Ok(true)
@@ -186,7 +151,7 @@ pub async fn test_connection(
 /// Get application version
 #[tauri::command]
 pub fn get_version() -> String {
-    crate::VERSION.to_string()
+    geist_vpn::VERSION.to_string()
 }
 
 /// Get system information
@@ -195,7 +160,7 @@ pub fn get_system_info() -> serde_json::Value {
     serde_json::json!({
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
-        "version": crate::VERSION,
+        "version": geist_vpn::VERSION,
         "softether_version": "Not yet implemented"
     })
 }

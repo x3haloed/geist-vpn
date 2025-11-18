@@ -3,11 +3,7 @@
 //! Provides a safe Rust interface to SoftEtherVPN's client functionality.
 
 use crate::error::{Error, Result};
-use crate::profile::{VpnProfile, VpnProtocol, AuthMethod};
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
-use std::ptr;
-use std::sync::Arc;
+use crate::profile::VpnProfile;
 use tokio::sync::broadcast;
 
 /// SoftEther VPN Client wrapper
@@ -56,7 +52,7 @@ impl SoftEtherClient {
         use std::sync::Once;
         static INIT: Once = Once::new();
 
-        let mut init_result = Ok(());
+        let init_result = Ok(());
         INIT.call_once(|| {
             unsafe {
                 // Start the client service (required for threading)
@@ -106,17 +102,17 @@ impl SoftEtherClient {
         let connect_req = self.create_connect_request(profile)?;
 
         // Attempt connection using SoftEther FFI
-        unsafe {
-            let result = crate::bindings::CtConnect(
+        let result = unsafe {
+            crate::bindings::CtConnect(
                 self.client_handle,
-                connect_req.as_typed_ptr(),
-            );
+                connect_req.as_typed_ptr::<crate::bindings::RPC_CLIENT_CONNECT>(),
+            )
+        };
 
-            if !result {
-                return Err(Error::ConnectionFailed {
-                    message: "VPN connection failed".into(),
-                });
-            }
+        if result == 0 {
+            return Err(Error::ConnectionFailed {
+                message: "VPN connection failed".into(),
+            });
         }
 
         self.connected = true;
@@ -151,18 +147,18 @@ impl SoftEtherClient {
                     message: "Failed to allocate disconnect request".into(),
                 })?;
 
-            unsafe {
-                let result = crate::bindings::CtDisconnect(
+            let result = unsafe {
+                crate::bindings::CtDisconnect(
                     self.client_handle,
-                    disconnect_req.as_typed_ptr(),
-                    false, // inner parameter
-                );
+                    Box::into_raw(disconnect_req),
+                    0, // inner parameter (false as u8)
+                )
+            };
 
-                if !result {
-                    return Err(Error::FfiError {
-                        message: "VPN disconnect failed".into(),
-                    });
-                }
+            if result == 0 {
+                return Err(Error::FfiError {
+                    message: "VPN disconnect failed".into(),
+                });
             }
         }
 
@@ -199,18 +195,25 @@ impl SoftEtherClient {
     fn create_connect_request(&self, profile: &VpnProfile) -> Result<crate::memory::RawMemory> {
         use crate::memory::strings;
 
-        // Create the RPC_CLIENT_CONNECT structure
-        let account_name_wide = strings::rust_to_softether_wide(&profile.account_name)?;
+        // Allocate raw memory for the RPC_CLIENT_CONNECT structure
+        let size = std::mem::size_of::<crate::bindings::RPC_CLIENT_CONNECT>();
+        let raw_mem = crate::memory::malloc_raw(size)?;
 
+        // Create the RPC_CLIENT_CONNECT structure and copy it into the allocated memory
+        let account_name_wide = strings::rust_to_softether_wide(&profile.account_name)?;
         let connect_req = crate::bindings::RPC_CLIENT_CONNECT {
             AccountName: account_name_wide,
         };
 
-        // Allocate memory for the structure using SoftEther's allocator
-        crate::memory::malloc_box(connect_req)
-            .map_err(|_| Error::FfiError {
-                message: "Failed to allocate connection request".into(),
-            })
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &connect_req as *const _ as *const u8,
+                raw_mem.as_ptr() as *mut u8,
+                size
+            );
+        }
+
+        Ok(raw_mem)
     }
 }
 
@@ -234,7 +237,7 @@ impl Drop for SoftEtherClient {
 
         unsafe {
             if !self.client_handle.is_null() {
-                crate::bindings::CiFreeClient(self.client_handle);
+                crate::bindings::CtReleaseClient(self.client_handle);
             }
         }
     }

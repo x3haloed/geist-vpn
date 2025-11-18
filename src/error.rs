@@ -1,6 +1,5 @@
 //! Error types for the Geist VPN application
 
-use std::fmt;
 
 /// Result type alias for Geist VPN operations
 pub type Result<T> = std::result::Result<T, Error>;

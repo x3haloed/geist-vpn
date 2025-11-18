@@ -77,6 +77,7 @@ echo "2. cargo build: Should compile SoftEtherVPN and link successfully"
 echo "3. cargo test --lib: All unit tests should pass"
 echo "4. cargo test --test ffi_integration: Basic FFI tests should pass"
 echo "5. cargo tauri dev: Should start GUI application"
+echo "6. cargo tauri build: Should create distributable packages"
 
 echo ""
 echo "⚠️  Note: SoftEtherVPN compilation may take several minutes on first build"

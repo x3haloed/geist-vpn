@@ -130,7 +130,9 @@ pub mod strings {
     /// Convert a Rust string to a SoftEther wide string buffer
     pub fn rust_to_softether_wide(s: &str) -> Result<[u16; MAX_ACCOUNT_NAME_LEN + 1]> {
         let mut buffer = [0u16; MAX_ACCOUNT_NAME_LEN + 1];
-        to_wide_string(s, &mut buffer)?;
+        to_wide_string(s, &mut buffer).map_err(|e| crate::error::Error::EncodingError {
+            message: format!("String conversion failed: {}", e),
+        })?;
         Ok(buffer)
     }
 

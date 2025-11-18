@@ -27,8 +27,8 @@ pub fn init() -> Result<()> {
     // Initialize SoftEtherVPN internals
     // This will call the appropriate FFI functions
     unsafe {
-        // CtStartClient() equivalent
-        bindings::init_softether_library();
+        // Start the SoftEther client service
+        bindings::CtStartClient();
     }
 
     tracing::info!("SoftEtherVPN library initialized");
@@ -41,11 +41,6 @@ pub fn init() -> Result<()> {
 pub fn cleanup() -> Result<()> {
     // Stop the SoftEther client service
     SoftEtherClient::global_cleanup()?;
-
-    unsafe {
-        // Additional cleanup if needed
-        // bindings::cleanup_softether_library();
-    }
 
     tracing::info!("SoftEtherVPN library cleaned up");
     Ok(())
