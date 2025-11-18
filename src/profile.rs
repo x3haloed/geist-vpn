@@ -89,7 +89,7 @@ impl Default for ProfileMetadata {
 }
 
 /// Supported VPN protocols
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VpnProtocol {
     /// SSL-VPN (SoftEther's primary protocol)
     SslVpn,
@@ -105,6 +105,18 @@ pub enum VpnProtocol {
 
     /// WireGuard (if supported)
     WireGuard,
+}
+
+impl std::fmt::Display for VpnProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VpnProtocol::SslVpn => write!(f, "SSL VPN"),
+            VpnProtocol::L2tpIpsec => write!(f, "L2TP/IPsec"),
+            VpnProtocol::OpenVpn => write!(f, "OpenVPN"),
+            VpnProtocol::Sstp => write!(f, "SSTP"),
+            VpnProtocol::WireGuard => write!(f, "WireGuard"),
+        }
+    }
 }
 
 /// Authentication methods

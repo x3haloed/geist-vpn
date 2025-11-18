@@ -1,60 +1,413 @@
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+use iced::widget::{button, column, container, row, scrollable, text, stack, Column};
+use iced::{Alignment, Element, Length, Subscription, Task};
+use iced::{Color, Theme};
+use tracing_subscriber;
 
-use tauri::Manager;
+mod ui;
 
-mod commands;
+use geist_vpn::profile::{ProfileManager, VpnProfile};
+use std::sync::Arc;
+use geist_vpn::{init, cleanup};
 
-#[derive(Clone)]
-pub struct AppState {
-    // For now, we'll manage the VPN client separately
-    // to avoid Send/Sync issues with raw pointers
+#[derive(Debug, Clone)]
+pub enum Message {
+    // Connection messages
+    Connect(String),
+    Disconnect,
+    ConnectionResult(Result<(), String>),
+
+    // Profile management messages
+    LoadProfiles,
+    ProfilesLoaded(Result<Vec<VpnProfile>, String>),
+    CreateProfile,
+    EditProfile(String),
+    DeleteProfile(String),
+    ToggleFavorite(String),
+    SaveProfile(VpnProfile),
+    ProfileSaved(Result<(), String>),
+
+    // Profile modal messages
+    ProfileModalUpdateName(String),
+    ProfileModalUpdateHost(String),
+    ProfileModalUpdatePort(String),
+    ProfileModalUpdateProtocol(geist_vpn::profile::VpnProtocol),
+    ProfileModalUpdateAccount(String),
+    ProfileModalUpdateTimeout(String),
+    ProfileModalSave,
+
+    // UI state messages
+    ProfileSelected(String),
+    ViewChanged(ViewMode),
+    ModalClosed,
+
+    // Status updates
+    StatusUpdated(ConnectionStatus),
 }
 
-fn main() {
+#[derive(Debug, Clone, PartialEq)]
+pub enum ViewMode {
+    All,
+    Favorites,
+    Recent,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectionStatus {
+    pub connected: bool,
+    pub profile_name: Option<String>,
+    pub status_message: String,
+}
+
+impl Default for ConnectionStatus {
+    fn default() -> Self {
+        Self {
+            connected: false,
+            profile_name: None,
+            status_message: "Disconnected".to_string(),
+        }
+    }
+}
+
+pub struct GeistApp {
+    // Connection state
+    connection_status: ConnectionStatus,
+    selected_profile: Option<String>,
+
+    // Profile management
+    profiles: Vec<VpnProfile>,
+    current_view: ViewMode,
+
+    // UI state
+    profile_manager: Option<Arc<ProfileManager>>,
+    loading_profiles: bool,
+    connecting: bool,
+
+    // Modal state
+    show_profile_modal: bool,
+    profile_modal_state: ui::modal::ProfileModalState,
+}
+
+impl Default for GeistApp {
+    fn default() -> Self {
+        Self {
+            connection_status: ConnectionStatus::default(),
+            selected_profile: None,
+            profiles: Vec::new(),
+            current_view: ViewMode::All,
+            profile_manager: None,
+            loading_profiles: false,
+            connecting: false,
+            show_profile_modal: false,
+            profile_modal_state: ui::modal::ProfileModalState::default(),
+        }
+    }
+}
+
+impl GeistApp {
+    fn new() -> (Self, Task<Message>) {
+        let mut app = Self::default();
+
+        // Initialize SoftEther
+        if let Err(e) = init() {
+            tracing::error!("Failed to initialize SoftEther: {}", e);
+        }
+
+        // Initialize profile manager
+        match ProfileManager::new() {
+            Ok(manager) => {
+                app.profile_manager = Some(Arc::new(manager));
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize profile manager: {}", e);
+            }
+        }
+
+        (app, iced::Task::perform(async { Message::LoadProfiles }, |_| Message::LoadProfiles))
+    }
+
+    fn update(&mut self, message: Message) -> iced::Task<Message> {
+        match message {
+            Message::Connect(profile_id) => {
+                self.connecting = true;
+                iced::Task::perform(
+                    async move {
+                        // TODO: Implement actual VPN connection
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        Ok(())
+                    },
+                    move |result: Result<(), tokio::task::JoinError>| Message::ConnectionResult(result.map_err(|e| format!("Connection failed: {:?}", e))),
+                )
+            }
+
+            Message::Disconnect => {
+                self.connecting = true;
+                iced::Task::perform(
+                    async {
+                        // TODO: Implement actual VPN disconnection
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        Ok(())
+                    },
+                    |result: Result<(), tokio::task::JoinError>| Message::ConnectionResult(result.map_err(|e| format!("Disconnection failed: {:?}", e))),
+                )
+            }
+
+            Message::ConnectionResult(result) => {
+                self.connecting = false;
+                match result {
+                    Ok(_) => {
+                        // Update connection status
+                        self.connection_status = ConnectionStatus {
+                            connected: !self.connection_status.connected,
+                            profile_name: self.selected_profile.clone(),
+                            status_message: if self.connection_status.connected {
+                                "Disconnected".to_string()
+                            } else {
+                                "Connected".to_string()
+                            },
+                        };
+                    }
+                    Err(error) => {
+                        self.connection_status.status_message = format!("Error: {}", error);
+                    }
+                }
+                iced::Task::none()
+            }
+
+            Message::LoadProfiles => {
+                self.loading_profiles = true;
+                let manager = self.profile_manager.as_ref().map(Arc::clone);
+                iced::Task::perform(
+                    async move {
+                        if let Some(manager) = manager {
+                            manager.load_profiles().map_err(|e| e.to_string())
+                        } else {
+                            Err("Profile manager not initialized".to_string())
+                        }
+                    },
+                    |result| Message::ProfilesLoaded(result),
+                )
+            }
+
+            Message::ProfilesLoaded(result) => {
+                self.loading_profiles = false;
+                match result {
+                    Ok(profiles) => {
+                        self.profiles = profiles;
+                    }
+                    Err(error) => {
+                        tracing::error!("Failed to load profiles: {}", error);
+                    }
+                }
+                iced::Task::none()
+            }
+
+            Message::CreateProfile => {
+                self.show_profile_modal = true;
+                self.profile_modal_state = ui::modal::ProfileModalState::default();
+                iced::Task::none()
+            }
+
+            Message::EditProfile(profile_id) => {
+                if let Some(profile) = self.profiles.iter().find(|p| p.id == profile_id) {
+                    self.show_profile_modal = true;
+                    self.profile_modal_state = ui::modal::ProfileModalState::from_profile(profile);
+                }
+                iced::Task::none()
+            }
+
+            Message::DeleteProfile(profile_id) => {
+                if let Some(manager) = &self.profile_manager {
+                    if let Err(e) = manager.delete_profile(&profile_id) {
+                        tracing::error!("Failed to delete profile: {}", e);
+                    }
+                }
+                iced::Task::perform(async { Message::LoadProfiles }, |_| Message::LoadProfiles)
+            }
+
+            Message::ToggleFavorite(profile_id) => {
+                if let Some(manager) = &self.profile_manager {
+                    if let Some(profile) = self.profiles.iter_mut().find(|p| p.id == profile_id) {
+                        profile.toggle_favorite();
+                        if let Err(e) = manager.save_profile(profile) {
+                            tracing::error!("Failed to save profile: {}", e);
+                        }
+                    }
+                }
+                iced::Task::none()
+            }
+
+            Message::SaveProfile(profile) => {
+                let manager = self.profile_manager.as_ref().map(Arc::clone);
+                iced::Task::perform(
+                    async move {
+                        if let Some(manager) = manager {
+                            manager.save_profile(&profile).map_err(|e| e.to_string())
+                        } else {
+                            Err("Profile manager not initialized".to_string())
+                        }
+                    },
+                    |result| Message::ProfileSaved(result),
+                )
+            }
+
+            Message::ProfileSaved(result) => {
+                match result {
+                    Ok(_) => {
+                        self.show_profile_modal = false;
+// No editing_profile field anymore
+                    }
+                    Err(error) => {
+                        tracing::error!("Failed to save profile: {}", error);
+                    }
+                }
+                iced::Task::perform(async { Message::LoadProfiles }, |_| Message::LoadProfiles)
+            }
+
+            Message::ProfileSelected(profile_id) => {
+                self.selected_profile = Some(profile_id);
+                iced::Task::none()
+            }
+
+            Message::ViewChanged(view) => {
+                self.current_view = view;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateName(name) => {
+                self.profile_modal_state.name = name;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateHost(host) => {
+                self.profile_modal_state.host = host;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdatePort(port) => {
+                self.profile_modal_state.port = port;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateProtocol(protocol) => {
+                self.profile_modal_state.protocol = protocol;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateAccount(account) => {
+                self.profile_modal_state.account_name = account;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateTimeout(timeout) => {
+                self.profile_modal_state.timeout = timeout;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalSave => {
+                if self.profile_modal_state.is_valid() {
+                    match self.profile_modal_state.to_profile(
+                        if self.profile_modal_state.editing {
+                            // Find existing profile ID
+                            self.profiles.iter()
+                                .find(|p| p.name == self.profile_modal_state.name)
+                                .map(|p| p.id.clone())
+                        } else {
+                            None
+                        }
+                    ) {
+                        Ok(profile) => {
+                            return iced::Task::perform(async move { Message::SaveProfile(profile) }, |msg| msg);
+                        }
+                        Err(error) => {
+                            tracing::error!("Failed to create profile: {}", error);
+                        }
+                    }
+                }
+                iced::Task::none()
+            }
+
+            Message::ModalClosed => {
+                self.show_profile_modal = false;
+                self.profile_modal_state = ui::modal::ProfileModalState::default();
+                iced::Task::none()
+            }
+
+            Message::StatusUpdated(status) => {
+                self.connection_status = status;
+                iced::Task::none()
+            }
+        }
+    }
+
+    fn view(&self) -> Element<Message> {
+        let content = column![
+            ui::header::view(&self.connection_status),
+            ui::quick_connect::view(
+                &self.profiles,
+                self.selected_profile.as_deref(),
+                self.connecting,
+                &self.connection_status
+            ),
+            ui::quick_access::view(&self.current_view),
+            ui::profiles::view(
+                &self.profiles,
+                &self.current_view,
+                self.loading_profiles
+            ),
+        ]
+        .spacing(20)
+        .padding(20);
+
+        let container = container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|theme: &Theme| {
+                iced::widget::container::Style {
+                    background: Some(theme.palette().background.into()),
+                    ..Default::default()
+                }
+            });
+
+        // Add modal if needed
+        if self.show_profile_modal {
+            let modal = ui::modal::view(&self.profile_modal_state);
+
+            // Overlay the modal on top of the main content
+            iced::widget::stack![
+                container,
+                iced::widget::opaque(
+                    iced::widget::container(modal)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(40)
+                        .center_x(Length::Fill)
+                        .center_y(Length::Fill)
+                        .style(|theme: &iced::Theme| iced::widget::container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                            ..Default::default()
+                        })
+                )
+            ].into()
+        } else {
+            container.into()
+        }
+    }
+
+    fn theme(&self) -> Theme {
+        Theme::default()
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        // TODO: Add status polling subscription
+        Subscription::none()
+    }
+}
+
+fn main() -> iced::Result {
     tracing_subscriber::fmt::init();
 
-    tauri::Builder::default()
-        .manage(AppState {})
-        .invoke_handler(tauri::generate_handler![
-            commands::connect_vpn,
-            commands::disconnect_vpn,
-            commands::get_connection_status,
-            commands::list_profiles,
-            commands::save_profile,
-            commands::delete_profile,
-            commands::get_profile,
-            commands::toggle_profile_favorite,
-            commands::get_favorite_profiles,
-            commands::get_recent_profiles,
-            commands::create_profile,
-            commands::test_connection,
-            commands::get_version,
-            commands::get_system_info,
-        ])
-        .setup(|app| {
-            // Create the main window programmatically for Tauri v2
-            let window = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-                .title("Geist VPN")
-                .inner_size(1200.0, 800.0)
-                .min_inner_size(800.0, 600.0)
-                .center()
-                .build()
-                .map_err(|e| {
-                    eprintln!("Failed to create main window: {}", e);
-                    e
-                })?;
-
-            // Additional steps to ensure visibility on macOS
-            window.show().unwrap_or_else(|e| eprintln!("Warning: Could not show window: {}", e));
-            window.set_focus().unwrap_or_else(|e| eprintln!("Warning: Could not focus window: {}", e));
-
-            println!("Geist VPN window created and should be visible");
-
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    iced::application("Geist VPN", GeistApp::update, GeistApp::view)
+        .subscription(GeistApp::subscription)
+        .theme(GeistApp::theme)
+        .run_with(GeistApp::new)
 }

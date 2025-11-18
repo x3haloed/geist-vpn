@@ -1,7 +1,15 @@
 //! # Geist VPN - Modern Rust GUI for SoftEtherVPN
 //!
 //! This crate provides a safe, modern interface to SoftEtherVPN's client functionality
-//! through FFI bindings, wrapped in a cross-platform GUI built with Tauri.
+//! through FFI bindings, wrapped in a cross-platform GUI built with Iced.
+//!
+//! ## Features
+//!
+//! - Native Rust GUI using Iced
+//! - SoftEther VPN client integration
+//! - Profile management
+//! - Connection status monitoring
+//! - Cross-platform support (macOS, Windows, Linux)
 
 pub mod client;
 pub mod profile;
