@@ -29,7 +29,7 @@ pub struct VpnProfile {
     /// Authentication method
     pub auth: AuthMethod,
 
-    /// Account name/username
+    /// Account name (used for connection identification)
     pub account_name: String,
 
     /// Connection timeout in seconds

@@ -3,7 +3,33 @@
 //! This module contains the unsafe foreign function interface declarations
 //! for interacting with the SoftEtherVPN C libraries.
 
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int, c_uint, c_void};
+
+// Basic types from SoftEther
+pub type UINT = c_uint;
+pub type UINT64 = u64;
+pub type UCHAR = u8;
+pub type bool = std::os::raw::c_uchar; // SoftEther uses UCHAR for bool
+
+// Maximum string lengths (from SoftEther constants)
+pub const MAX_ACCOUNT_NAME_LEN: usize = 127;
+pub const MAX_HOST_NAME_LEN: usize = 255;
+pub const SHA1_SIZE: usize = 20;
+
+// Memory management (SoftEther custom allocators)
+extern "C" {
+    /// SoftEther malloc
+    pub fn Malloc(size: UINT) -> *mut c_void;
+
+    /// SoftEther zero malloc
+    pub fn ZeroMalloc(size: UINT) -> *mut c_void;
+
+    /// SoftEther free
+    pub fn Free(ptr: *mut c_void);
+
+    /// SoftEther realloc
+    pub fn ReAlloc(ptr: *mut c_void, size: UINT) -> *mut c_void;
+}
 
 // Client management functions
 extern "C" {
@@ -11,31 +37,32 @@ extern "C" {
     pub fn CiNewClient() -> *mut c_void;
 
     /// Free a VPN client instance
-    pub fn CiFreeClient(client: *mut c_void);
+    pub fn CtReleaseClient(client: *mut c_void);
 
     /// Start the VPN client service
-    pub fn CtStartClient() -> c_int;
+    pub fn CtStartClient();
 
     /// Stop the VPN client service
-    pub fn CtStopClient() -> c_int;
+    pub fn CtStopClient();
 
     /// Connect to a VPN server
     pub fn CtConnect(
         client: *mut c_void,
-        connect_req: *mut c_void,
-    ) -> c_int;
+        connect_req: *mut RPC_CLIENT_CONNECT,
+    ) -> bool;
 
     /// Disconnect from VPN server
-    pub fn CtDisconnect(client: *mut c_void) -> c_int;
+    pub fn CtDisconnect(
+        client: *mut c_void,
+        connect_req: *mut RPC_CLIENT_CONNECT,
+        inner: bool,
+    ) -> bool;
 
     /// Get connection status
-    pub fn CtGetStatus(client: *mut c_void) -> c_int;
-
-    /// Enumerate available accounts
-    pub fn CtEnumAccount(
+    pub fn CtGetAccountStatus(
         client: *mut c_void,
-        accounts: *mut c_void,
-    ) -> c_int;
+        status: *mut RPC_CLIENT_GET_CONNECTION_STATUS,
+    ) -> bool;
 }
 
 // Account management functions
@@ -43,71 +70,93 @@ extern "C" {
     /// Create a new account
     pub fn CtCreateAccount(
         client: *mut c_void,
-        account_req: *mut c_void,
-    ) -> c_int;
+        account_req: *mut RPC_CLIENT_CREATE_ACCOUNT,
+        inner: bool,
+    ) -> bool;
+
+    /// Enumerate accounts
+    pub fn CtEnumAccount(
+        client: *mut c_void,
+        accounts: *mut RPC_CLIENT_ENUM_ACCOUNT,
+    ) -> bool;
 
     /// Delete an account
     pub fn CtDeleteAccount(
         client: *mut c_void,
-        account_name: *const c_char,
-    ) -> c_int;
+        account_req: *mut RPC_CLIENT_DELETE_ACCOUNT,
+        inner: bool,
+    ) -> bool;
 
-    /// Set account password
-    pub fn CtSetPassword(
+    /// Get account details
+    pub fn CtGetAccount(
         client: *mut c_void,
-        account_name: *const c_char,
-        password: *const c_char,
-    ) -> c_int;
+        account_req: *mut RPC_CLIENT_GET_ACCOUNT,
+    ) -> bool;
+
+    /// Set account details
+    pub fn CtSetAccount(
+        client: *mut c_void,
+        account_req: *mut RPC_CLIENT_CREATE_ACCOUNT,
+        inner: bool,
+    ) -> bool;
 }
 
-// Library initialization functions
-extern "C" {
-    /// Initialize SoftEtherVPN library
-    pub fn init_softether_library() -> c_int;
-
-    /// Cleanup SoftEtherVPN library
-    pub fn cleanup_softether_library() -> c_int;
-
-    /// Get library version
-    pub fn GetSoftEtherVersion() -> *const c_char;
+// RPC Structures (repr(C) for FFI compatibility)
+#[repr(C)]
+pub struct RPC_CLIENT_CONNECT {
+    pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1], // Wide char array
 }
 
-// Error handling
-extern "C" {
-    /// Get last error message
-    pub fn GetLastError() -> *const c_char;
-
-    /// Get last error code
-    pub fn GetLastErrorCode() -> c_int;
+#[repr(C)]
+pub struct RPC_CLIENT_GET_CONNECTION_STATUS {
+    pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1],
+    pub Active: bool,
+    pub Connected: bool,
+    pub SessionStatus: UINT,
+    pub ServerName: [c_char; MAX_HOST_NAME_LEN + 1],
+    pub ServerPort: UINT,
+    pub ServerProductName: [c_char; 256], // MAX_SIZE
+    pub ServerProductVer: UINT,
+    pub ServerProductBuild: UINT,
+    // ... many more fields, simplified for now
 }
 
-// Network utility functions
-extern "C" {
-    /// Test network connectivity
-    pub fn CtTestConnection(
-        hostname: *const c_char,
-        port: c_int,
-        timeout: c_int,
-    ) -> c_int;
+#[repr(C)]
+pub struct RPC_CLIENT_CREATE_ACCOUNT {
+    // This is a complex structure, simplified for initial implementation
+    pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1],
+    // ... other fields to be added
 }
 
-// Memory management (SoftEther custom allocators)
+#[repr(C)]
+pub struct RPC_CLIENT_ENUM_ACCOUNT {
+    // Structure for enumerating accounts
+    pub NumItem: UINT,
+    // ... other fields
+}
+
+#[repr(C)]
+pub struct RPC_CLIENT_DELETE_ACCOUNT {
+    pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1],
+}
+
+#[repr(C)]
+pub struct RPC_CLIENT_GET_ACCOUNT {
+    pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1],
+    // ... other fields
+}
+
+// Library initialization (these may not exist, need to check)
 extern "C" {
-    /// SoftEther malloc
-    pub fn Malloc(size: usize) -> *mut c_void;
+    /// Initialize SoftEtherVPN library (if available)
+    pub fn InitSoftEther() -> bool;
 
-    /// SoftEther free
-    pub fn Free(ptr: *mut c_void);
-
-    /// SoftEther realloc
-    pub fn ReAlloc(ptr: *mut c_void, size: usize) -> *mut c_void;
+    /// Cleanup SoftEtherVPN library (if available)
+    pub fn FreeSoftEther() -> bool;
 }
 
 // String utilities
 extern "C" {
-    /// Copy string (SoftEther style)
-    pub fn CopyStr(dst: *mut c_char, src: *const c_char) -> *mut c_char;
-
     /// Copy unicode string
     pub fn CopyUniStr(dst: *mut u16, src: *const u16) -> *mut u16;
 
@@ -118,55 +167,21 @@ extern "C" {
 // Thread management
 extern "C" {
     /// Sleep for specified milliseconds
-    pub fn SleepThread(millis: c_int);
-
-    /// Get current thread ID
-    pub fn ThreadId() -> u64;
-}
-
-// Logging functions
-extern "C" {
-    /// Write to log
-    pub fn WriteLog(
-        level: c_int,
-        tag: *const c_char,
-        message: *const c_char,
-    );
-
-    /// Set log level
-    pub fn SetLogLevel(level: c_int);
-}
-
-/// Safe wrapper for getting version string
-pub fn get_version() -> Option<String> {
-    unsafe {
-        let ptr = GetSoftEtherVersion();
-        if ptr.is_null() {
-            None
-        } else {
-            let c_str = std::ffi::CStr::from_ptr(ptr);
-            Some(c_str.to_string_lossy().into_owned())
-        }
-    }
-}
-
-/// Safe wrapper for getting last error
-pub fn get_last_error() -> Option<String> {
-    unsafe {
-        let ptr = GetLastError();
-        if ptr.is_null() {
-            None
-        } else {
-            let c_str = std::ffi::CStr::from_ptr(ptr);
-            Some(c_str.to_string_lossy().into_owned())
-        }
-    }
+    pub fn SleepThread(millis: UINT);
 }
 
 /// Safe wrapper for SoftEther malloc
-pub fn softether_malloc(size: usize) -> Option<std::ptr::NonNull<c_void>> {
+pub fn softether_malloc(size: UINT) -> Option<std::ptr::NonNull<c_void>> {
     unsafe {
         let ptr = Malloc(size);
+        std::ptr::NonNull::new(ptr)
+    }
+}
+
+/// Safe wrapper for SoftEther zero malloc
+pub fn softether_zero_malloc(size: UINT) -> Option<std::ptr::NonNull<c_void>> {
+    unsafe {
+        let ptr = ZeroMalloc(size);
         std::ptr::NonNull::new(ptr)
     }
 }
@@ -179,8 +194,20 @@ pub fn softether_free(ptr: *mut c_void) {
 }
 
 /// Convert Rust string to C string pointer
-pub fn to_c_string(s: &str) -> Result<CString, std::ffi::NulError> {
+pub fn to_c_string(s: &str) -> Result<std::ffi::CString, std::ffi::NulError> {
     std::ffi::CString::new(s)
+}
+
+/// Convert Rust string to wide char array (UTF-16)
+pub fn to_wide_string(s: &str, buffer: &mut [u16]) -> Result<(), std::ffi::NulError> {
+    let wide_chars: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+
+    if wide_chars.len() > buffer.len() {
+        return Err(std::ffi::NulError);
+    }
+
+    buffer[..wide_chars.len()].copy_from_slice(&wide_chars);
+    Ok(())
 }
 
 /// Log levels for SoftEther
@@ -191,7 +218,7 @@ pub mod log_level {
     pub const DEBUG: i32 = 3;
 }
 
-/// Error codes
+/// Error codes (based on common VPN error patterns)
 pub mod error_codes {
     pub const SUCCESS: i32 = 0;
     pub const CONNECTION_TIMEOUT: i32 = 1;

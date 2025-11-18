@@ -7,6 +7,7 @@ pub mod client;
 pub mod profile;
 pub mod error;
 pub mod bindings;
+pub mod memory;
 
 pub use client::SoftEtherClient;
 pub use profile::{VpnProfile, ProfileManager};
@@ -38,9 +39,12 @@ pub fn init() -> Result<()> {
 ///
 /// Call this when shutting down the application to free resources.
 pub fn cleanup() -> Result<()> {
+    // Stop the SoftEther client service
+    SoftEtherClient::global_cleanup()?;
+
     unsafe {
-        // CtStopClient() equivalent
-        bindings::cleanup_softether_library();
+        // Additional cleanup if needed
+        // bindings::cleanup_softether_library();
     }
 
     tracing::info!("SoftEtherVPN library cleaned up");

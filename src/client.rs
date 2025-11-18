@@ -7,6 +7,8 @@ use crate::profile::{VpnProfile, VpnProtocol, AuthMethod};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 
 /// SoftEther VPN Client wrapper
 pub struct SoftEtherClient {
@@ -18,11 +20,17 @@ pub struct SoftEtherClient {
 
     /// Active profile ID if connected
     active_profile: Option<String>,
+
+    /// Status update channel sender
+    status_tx: broadcast::Sender<ConnectionStatus>,
 }
 
 impl SoftEtherClient {
     /// Create a new SoftEther client instance
     pub fn new() -> Result<Self> {
+        // Initialize SoftEther threading if not already done
+        Self::ensure_softether_initialized()?;
+
         unsafe {
             let handle = crate::bindings::CiNewClient();
             if handle.is_null() {
@@ -31,12 +39,56 @@ impl SoftEtherClient {
                 });
             }
 
+            // Create broadcast channel for status updates (buffer size 16)
+            let (status_tx, _) = broadcast::channel(16);
+
             Ok(Self {
                 client_handle: handle,
                 connected: false,
                 active_profile: None,
+                status_tx,
             })
         }
+    }
+
+    /// Ensure SoftEtherVPN library is properly initialized for threading
+    fn ensure_softether_initialized() -> Result<()> {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+
+        let mut init_result = Ok(());
+        INIT.call_once(|| {
+            unsafe {
+                // Start the client service (required for threading)
+                crate::bindings::CtStartClient();
+                tracing::info!("SoftEtherVPN client service started");
+            }
+        });
+
+        init_result
+    }
+
+    /// Global cleanup for SoftEtherVPN threading system
+    ///
+    /// This should be called when the application shuts down.
+    pub fn global_cleanup() -> Result<()> {
+        unsafe {
+            crate::bindings::CtStopClient();
+            tracing::info!("SoftEtherVPN client service stopped");
+        }
+        Ok(())
+    }
+
+    /// Subscribe to connection status updates
+    ///
+    /// Returns a receiver that will get status updates as they happen.
+    pub fn subscribe_status(&self) -> broadcast::Receiver<ConnectionStatus> {
+        self.status_tx.subscribe()
+    }
+
+    /// Send a status update to all subscribers
+    fn send_status_update(&self, status: ConnectionStatus) {
+        let _ = self.status_tx.send(status);
     }
 
     /// Connect to a VPN server using the provided profile
@@ -53,20 +105,25 @@ impl SoftEtherClient {
         // Create connection request structure
         let connect_req = self.create_connect_request(profile)?;
 
-        // Attempt connection (this would call SoftEther FFI)
+        // Attempt connection using SoftEther FFI
         unsafe {
             let result = crate::bindings::CtConnect(
                 self.client_handle,
-                &connect_req as *const _ as *mut std::ffi::c_void,
+                connect_req.as_typed_ptr(),
             );
 
-            if result != 0 {
-                return Err(Error::from_softether_error(result));
+            if !result {
+                return Err(Error::ConnectionFailed {
+                    message: "VPN connection failed".into(),
+                });
             }
         }
 
         self.connected = true;
         self.active_profile = Some(profile.id.clone());
+
+        // Send status update
+        self.send_status_update(ConnectionStatus::Connected);
 
         tracing::info!("Connected to VPN: {}", profile.name);
         Ok(())
@@ -78,15 +135,42 @@ impl SoftEtherClient {
             return Ok(()); // Already disconnected
         }
 
-        unsafe {
-            let result = crate::bindings::CtDisconnect(self.client_handle);
-            if result != 0 {
-                return Err(Error::from_softether_error(result));
+        // For disconnect, we need to pass the same connection request
+        // In a full implementation, we'd store this, but for now we'll create a minimal one
+        if let Some(profile_id) = &self.active_profile {
+            // Create a minimal disconnect request
+            use crate::memory::strings;
+            let account_name_wide = strings::rust_to_softether_wide(profile_id)?;
+
+            let disconnect_req = crate::bindings::RPC_CLIENT_CONNECT {
+                AccountName: account_name_wide,
+            };
+
+            let disconnect_req = crate::memory::malloc_box(disconnect_req)
+                .map_err(|_| Error::FfiError {
+                    message: "Failed to allocate disconnect request".into(),
+                })?;
+
+            unsafe {
+                let result = crate::bindings::CtDisconnect(
+                    self.client_handle,
+                    disconnect_req.as_typed_ptr(),
+                    false, // inner parameter
+                );
+
+                if !result {
+                    return Err(Error::FfiError {
+                        message: "VPN disconnect failed".into(),
+                    });
+                }
             }
         }
 
         self.connected = false;
-        let profile_name = self.active_profile.take();
+        self.active_profile = None;
+
+        // Send status update
+        self.send_status_update(ConnectionStatus::Disconnected);
 
         tracing::info!("Disconnected from VPN");
         Ok(())
@@ -112,34 +196,21 @@ impl SoftEtherClient {
     }
 
     /// Create a connection request structure for SoftEther FFI
-    fn create_connect_request(&self, profile: &VpnProfile) -> Result<ConnectionRequest> {
-        let account_name = CString::new(profile.account_name.clone())?;
-        let hostname = CString::new(profile.host.clone())?;
+    fn create_connect_request(&self, profile: &VpnProfile) -> Result<crate::memory::RawMemory> {
+        use crate::memory::strings;
 
-        // Convert auth method to SoftEther format
-        let auth_info = match &profile.auth {
-            AuthMethod::Password { username, password } => {
-                let username_c = CString::new(username.clone())?;
-                let password_c = CString::new(password.clone())?;
+        // Create the RPC_CLIENT_CONNECT structure
+        let account_name_wide = strings::rust_to_softether_wide(&profile.account_name)?;
 
-                AuthInfo::Password {
-                    username: username_c,
-                    password: password_c,
-                }
-            }
-            _ => return Err(Error::ConnectionFailed {
-                message: "Unsupported authentication method".into(),
-            }),
+        let connect_req = crate::bindings::RPC_CLIENT_CONNECT {
+            AccountName: account_name_wide,
         };
 
-        Ok(ConnectionRequest {
-            account_name,
-            hostname,
-            port: profile.port,
-            protocol: profile.protocol.clone(),
-            auth_info,
-            timeout: profile.timeout,
-        })
+        // Allocate memory for the structure using SoftEther's allocator
+        crate::memory::malloc_box(connect_req)
+            .map_err(|_| Error::FfiError {
+                message: "Failed to allocate connection request".into(),
+            })
     }
 }
 
@@ -169,24 +240,8 @@ impl Drop for SoftEtherClient {
     }
 }
 
-/// Internal connection request structure
-struct ConnectionRequest {
-    account_name: CString,
-    hostname: CString,
-    port: u16,
-    protocol: VpnProtocol,
-    auth_info: AuthInfo,
-    timeout: u32,
-}
-
-/// Authentication information
-enum AuthInfo {
-    Password {
-        username: CString,
-        password: CString,
-    },
-    // Add other auth methods as needed
-}
+// Note: ConnectionRequest is now handled by the memory management system
+// and RPC_CLIENT_CONNECT structure from bindings.rs
 
 #[cfg(test)]
 mod tests {
