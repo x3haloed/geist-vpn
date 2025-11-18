@@ -12,16 +12,24 @@ use std::ptr::NonNull;
 ///
 /// Returns a Box that will automatically free the memory when dropped.
 pub fn malloc_box<T>(value: T) -> Result<Box<T>> {
-    let size = std::mem::size_of::<T>() as UINT;
-    let ptr = softether_malloc(size)
-        .ok_or_else(|| Error::FfiError {
-            message: "SoftEther malloc failed".into(),
-        })?;
+    #[cfg(not(test))]
+    {
+        let size = std::mem::size_of::<T>() as UINT;
+        let ptr = softether_malloc(size)
+            .ok_or_else(|| Error::FfiError {
+                message: "SoftEther malloc failed".into(),
+            })?;
 
-    unsafe {
-        let typed_ptr = ptr.as_ptr() as *mut T;
-        std::ptr::write(typed_ptr, value);
-        Ok(Box::from_raw(typed_ptr))
+        unsafe {
+            let typed_ptr = ptr.as_ptr() as *mut T;
+            std::ptr::write(typed_ptr, value);
+            Ok(Box::from_raw(typed_ptr))
+        }
+    }
+    #[cfg(test)]
+    {
+        // During tests, use Rust's standard allocator
+        Ok(Box::new(value))
     }
 }
 
@@ -32,16 +40,24 @@ pub fn zero_malloc_box<T>() -> Result<Box<T>>
 where
     T: Default,
 {
-    let size = std::mem::size_of::<T>() as UINT;
-    let ptr = softether_zero_malloc(size)
-        .ok_or_else(|| Error::FfiError {
-            message: "SoftEther zero malloc failed".into(),
-        })?;
+    #[cfg(not(test))]
+    {
+        let size = std::mem::size_of::<T>() as UINT;
+        let ptr = softether_zero_malloc(size)
+            .ok_or_else(|| Error::FfiError {
+                message: "SoftEther zero malloc failed".into(),
+            })?;
 
-    unsafe {
-        let typed_ptr = ptr.as_ptr() as *mut T;
-        std::ptr::write(typed_ptr, T::default());
-        Ok(Box::from_raw(typed_ptr))
+        unsafe {
+            let typed_ptr = ptr.as_ptr() as *mut T;
+            std::ptr::write(typed_ptr, T::default());
+            Ok(Box::from_raw(typed_ptr))
+        }
+    }
+    #[cfg(test)]
+    {
+        // During tests, use Rust's standard allocator
+        Ok(Box::new(T::default()))
     }
 }
 
@@ -49,28 +65,72 @@ where
 ///
 /// Returns a RawMemory handle that automatically frees when dropped.
 pub fn malloc_raw(size: usize) -> Result<RawMemory> {
-    let ptr = softether_malloc(size as UINT)
-        .ok_or_else(|| Error::FfiError {
-            message: "SoftEther malloc failed".into(),
-        })?;
+    #[cfg(not(test))]
+    {
+        let ptr = softether_malloc(size as UINT)
+            .ok_or_else(|| Error::FfiError {
+                message: "SoftEther malloc failed".into(),
+            })?;
 
-    Ok(RawMemory {
-        ptr,
-        size,
-    })
+        Ok(RawMemory {
+            ptr,
+            size,
+            is_softether_allocated: true,
+        })
+    }
+    #[cfg(test)]
+    {
+        // During tests, use Rust's standard allocator
+        let layout = Layout::from_size_align(size, std::mem::align_of::<u8>()).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            return Err(Error::FfiError {
+                message: "Rust alloc failed".into(),
+            });
+        }
+        let non_null_ptr = unsafe { NonNull::new_unchecked(ptr as *mut std::ffi::c_void) };
+
+        Ok(RawMemory {
+            ptr: non_null_ptr,
+            size,
+            is_softether_allocated: false,
+        })
+    }
 }
 
 /// Zero-allocate raw memory using SoftEther's allocator
 pub fn zero_malloc_raw(size: usize) -> Result<RawMemory> {
-    let ptr = softether_zero_malloc(size as UINT)
-        .ok_or_else(|| Error::FfiError {
-            message: "SoftEther zero malloc failed".into(),
-        })?;
+    #[cfg(not(test))]
+    {
+        let ptr = softether_zero_malloc(size as UINT)
+            .ok_or_else(|| Error::FfiError {
+                message: "SoftEther zero malloc failed".into(),
+            })?;
 
-    Ok(RawMemory {
-        ptr,
-        size,
-    })
+        Ok(RawMemory {
+            ptr,
+            size,
+            is_softether_allocated: true,
+        })
+    }
+    #[cfg(test)]
+    {
+        // During tests, use Rust's standard allocator
+        let layout = Layout::from_size_align(size, std::mem::align_of::<u8>()).unwrap();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return Err(Error::FfiError {
+                message: "Rust alloc_zeroed failed".into(),
+            });
+        }
+        let non_null_ptr = unsafe { NonNull::new_unchecked(ptr as *mut std::ffi::c_void) };
+
+        Ok(RawMemory {
+            ptr: non_null_ptr,
+            size,
+            is_softether_allocated: false,
+        })
+    }
 }
 
 /// Handle to raw memory allocated with SoftEther's allocator
@@ -79,6 +139,7 @@ pub fn zero_malloc_raw(size: usize) -> Result<RawMemory> {
 pub struct RawMemory {
     ptr: NonNull<std::ffi::c_void>,
     size: usize,
+    is_softether_allocated: bool,
 }
 
 impl RawMemory {
@@ -100,7 +161,16 @@ impl RawMemory {
 
 impl Drop for RawMemory {
     fn drop(&mut self) {
-        softether_free(self.ptr.as_ptr());
+        if self.is_softether_allocated {
+            #[cfg(not(test))]
+            softether_free(self.ptr.as_ptr());
+        } else {
+            #[cfg(test)]
+            unsafe {
+                let layout = Layout::from_size_align(self.size, std::mem::align_of::<u8>()).unwrap();
+                std::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
+            }
+        }
     }
 }
 

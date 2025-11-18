@@ -13,13 +13,23 @@ pub struct SoftEtherClient {
     client_handle: *mut std::ffi::c_void,
 
     /// Current connection state
-    connected: bool,
+    state: ConnectionState,
 
-    /// Active profile ID if connected
-    active_profile: Option<String>,
+    /// Active profile if connected
+    active_profile: Option<VpnProfile>,
 
     /// Status update channel sender
     status_tx: broadcast::Sender<ConnectionStatus>,
+}
+
+/// Internal connection state for better lifecycle management
+#[derive(Debug, Clone, PartialEq)]
+enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Disconnecting,
+    Error(String),
 }
 
 impl SoftEtherClient {
@@ -41,7 +51,7 @@ impl SoftEtherClient {
 
             Ok(Self {
                 client_handle: handle,
-                connected: false,
+                state: ConnectionState::Disconnected,
                 active_profile: None,
                 status_tx,
             })
@@ -97,6 +107,15 @@ impl SoftEtherClient {
         self.status_tx.subscribe()
     }
 
+    /// Subscribe to detailed connection status updates
+    ///
+    /// Returns a receiver that will get detailed status updates.
+    pub fn subscribe_detailed_status(&self) -> broadcast::Receiver<DetailedConnectionStatus> {
+        // For now, we don't have a separate channel for detailed status
+        // This could be implemented later if needed
+        panic!("Detailed status subscription not yet implemented");
+    }
+
     /// Send a status update to all subscribers
     fn send_status_update(&self, status: ConnectionStatus) {
         let _ = self.status_tx.send(status);
@@ -104,54 +123,117 @@ impl SoftEtherClient {
 
     /// Connect to a VPN server using the provided profile
     pub async fn connect(&mut self, profile: &VpnProfile) -> Result<()> {
-        if self.connected {
-            return Err(Error::ConnectionFailed {
-                message: "Client is already connected".into(),
-            });
+        // Check current state
+        match self.state {
+            ConnectionState::Connected => {
+                return Err(Error::ConnectionFailed {
+                    message: "Client is already connected".into(),
+                });
+            }
+            ConnectionState::Connecting => {
+                return Err(Error::ConnectionFailed {
+                    message: "Connection attempt already in progress".into(),
+                });
+            }
+            ConnectionState::Disconnecting => {
+                return Err(Error::ConnectionFailed {
+                    message: "Cannot connect while disconnecting".into(),
+                });
+            }
+            _ => {} // Disconnected or Error states are OK to proceed from
         }
 
         // Validate profile before attempting connection
         profile.validate()?;
 
+        // Transition to connecting state
+        self.state = ConnectionState::Connecting;
+        self.send_status_update(ConnectionStatus::Connecting);
+        tracing::info!("Starting VPN connection to: {}", profile.name);
+
         // Create connection request structure
         let connect_req = self.create_connect_request(profile)?;
 
-        // Attempt connection using SoftEther FFI
-        let result = unsafe {
-            crate::bindings::CtConnect(
-                self.client_handle,
-                connect_req.as_typed_ptr::<crate::bindings::RPC_CLIENT_CONNECT>(),
-            )
+        // Attempt connection with timeout
+        let connect_future = async {
+            let result = unsafe {
+                crate::bindings::CtConnect(
+                    self.client_handle,
+                    connect_req.as_typed_ptr::<crate::bindings::RPC_CLIENT_CONNECT>(),
+                )
+            };
+
+            if result == 0 {
+                return Err(Error::ConnectionFailed {
+                    message: "VPN connection failed".into(),
+                });
+            }
+
+            Ok(())
         };
 
-        if result == 0 {
-            return Err(Error::ConnectionFailed {
-                message: "VPN connection failed".into(),
-            });
+        // Add timeout (30 seconds default)
+        let timeout_duration = std::time::Duration::from_secs(profile.timeout as u64);
+        match tokio::time::timeout(timeout_duration, connect_future).await {
+            Ok(Ok(())) => {
+                // Connection successful
+                self.state = ConnectionState::Connected;
+                self.active_profile = Some(profile.clone());
+                self.send_status_update(ConnectionStatus::Connected);
+                tracing::info!("Successfully connected to VPN: {}", profile.name);
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                // Connection failed
+                self.state = ConnectionState::Disconnected;
+                self.send_status_update(ConnectionStatus::Disconnected);
+                tracing::error!("VPN connection failed: {}", e);
+                Err(e)
+            }
+            Err(_) => {
+                // Timeout
+                self.state = ConnectionState::Disconnected;
+                self.send_status_update(ConnectionStatus::Disconnected);
+                let error = Error::ConnectionFailed {
+                    message: format!("VPN connection timed out after {} seconds", profile.timeout),
+                };
+                tracing::error!("{}", error);
+                Err(error)
+            }
         }
-
-        self.connected = true;
-        self.active_profile = Some(profile.id.clone());
-
-        // Send status update
-        self.send_status_update(ConnectionStatus::Connected);
-
-        tracing::info!("Connected to VPN: {}", profile.name);
-        Ok(())
     }
 
     /// Disconnect from the current VPN connection
     pub async fn disconnect(&mut self) -> Result<()> {
-        if !self.connected {
-            return Ok(()); // Already disconnected
+        // Check current state
+        match self.state {
+            ConnectionState::Disconnected => {
+                return Ok(()); // Already disconnected
+            }
+            ConnectionState::Connecting => {
+                return Err(Error::ConnectionFailed {
+                    message: "Cannot disconnect while connecting".into(),
+                });
+            }
+            ConnectionState::Disconnecting => {
+                return Err(Error::ConnectionFailed {
+                    message: "Disconnect already in progress".into(),
+                });
+            }
+            _ => {} // Connected or Error states are OK to disconnect from
         }
+
+        // Transition to disconnecting state
+        self.state = ConnectionState::Disconnecting;
+        self.send_status_update(ConnectionStatus::Disconnecting);
+        tracing::info!("Starting VPN disconnection");
 
         // For disconnect, we need to pass the same connection request
         // In a full implementation, we'd store this, but for now we'll create a minimal one
-        if let Some(profile_id) = &self.active_profile {
+        if let Some(profile) = &self.active_profile {
             // Create a minimal disconnect request
             use crate::memory::strings;
-            let account_name_wide = strings::rust_to_softether_wide(profile_id)?;
+            let account_name_wide = strings::rust_to_softether_wide(&profile.account_name)?;
 
             let disconnect_req = crate::bindings::RPC_CLIENT_CONNECT {
                 AccountName: account_name_wide,
@@ -162,48 +244,136 @@ impl SoftEtherClient {
                     message: "Failed to allocate disconnect request".into(),
                 })?;
 
-            let result = unsafe {
-                crate::bindings::CtDisconnect(
-                    self.client_handle,
-                    Box::into_raw(disconnect_req),
-                    0, // inner parameter (false as u8)
-                )
+            // Attempt disconnect with timeout
+            let disconnect_future = async {
+                let result = unsafe {
+                    crate::bindings::CtDisconnect(
+                        self.client_handle,
+                        Box::into_raw(disconnect_req),
+                        0, // inner parameter (false as u8)
+                    )
+                };
+
+                if result == 0 {
+                    return Err(Error::FfiError {
+                        message: "VPN disconnect failed".into(),
+                    });
+                }
+
+                Ok(())
             };
 
-            if result == 0 {
-                return Err(Error::FfiError {
-                    message: "VPN disconnect failed".into(),
-                });
+            // Add timeout (10 seconds for disconnect)
+            let timeout_duration = std::time::Duration::from_secs(10);
+            match tokio::time::timeout(timeout_duration, disconnect_future).await {
+                Ok(Ok(())) => {
+                    // Disconnect successful
+                    self.state = ConnectionState::Disconnected;
+                    self.active_profile = None;
+                    self.send_status_update(ConnectionStatus::Disconnected);
+                    tracing::info!("Successfully disconnected from VPN");
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    // Disconnect failed but let's still clean up state
+                    self.state = ConnectionState::Error("Disconnect failed".into());
+                    self.active_profile = None;
+                    self.send_status_update(ConnectionStatus::Error("Disconnect failed".into()));
+                    tracing::error!("VPN disconnect failed: {}", e);
+                    Err(e)
+                }
+                Err(_) => {
+                    // Timeout - still clean up state
+                    self.state = ConnectionState::Error("Disconnect timeout".into());
+                    self.active_profile = None;
+                    self.send_status_update(ConnectionStatus::Error("Disconnect timeout".into()));
+                    let error = Error::FfiError {
+                        message: "VPN disconnect timed out".into(),
+                    };
+                    tracing::error!("{}", error);
+                    Err(error)
+                }
             }
+        } else {
+            // No active profile, just update state
+            self.state = ConnectionState::Disconnected;
+            self.send_status_update(ConnectionStatus::Disconnected);
+            tracing::info!("Disconnected from VPN (no active profile)");
+            Ok(())
         }
-
-        self.connected = false;
-        self.active_profile = None;
-
-        // Send status update
-        self.send_status_update(ConnectionStatus::Disconnected);
-
-        tracing::info!("Disconnected from VPN");
-        Ok(())
     }
 
     /// Get the current connection status
     pub fn get_status(&self) -> ConnectionStatus {
-        if !self.connected {
-            ConnectionStatus::Disconnected
-        } else {
-            ConnectionStatus::Connected
+        match &self.state {
+            ConnectionState::Disconnected => ConnectionStatus::Disconnected,
+            ConnectionState::Connecting => ConnectionStatus::Connecting,
+            ConnectionState::Connected => ConnectionStatus::Connected,
+            ConnectionState::Disconnecting => ConnectionStatus::Disconnecting,
+            ConnectionState::Error(msg) => ConnectionStatus::Error(msg.clone()),
+        }
+    }
+
+    /// Get detailed connection status from SoftEther
+    ///
+    /// This queries the actual connection status from the SoftEther client.
+    pub async fn get_detailed_status(&self) -> Result<DetailedConnectionStatus> {
+        if self.client_handle.is_null() {
+            return Ok(DetailedConnectionStatus::default());
+        }
+
+        unsafe {
+            // Allocate memory for the status structure
+            let status_size = std::mem::size_of::<crate::bindings::RPC_CLIENT_GET_CONNECTION_STATUS>();
+            let status_mem = crate::memory::zero_malloc_raw(status_size)?;
+
+            // Call CtGetAccountStatus
+            let success = crate::bindings::CtGetAccountStatus(
+                self.client_handle,
+                status_mem.as_typed_ptr::<crate::bindings::RPC_CLIENT_GET_CONNECTION_STATUS>(),
+            );
+
+            if !success {
+                return Err(Error::FfiError {
+                    message: "Failed to get connection status".into(),
+                });
+            }
+
+            // Extract status information
+            let status_ptr = status_mem.as_typed_ptr::<crate::bindings::RPC_CLIENT_GET_CONNECTION_STATUS>();
+            let status = &*status_ptr;
+
+            // Convert server name from C string to Rust string
+            let server_name = std::ffi::CStr::from_ptr(status.ServerName.as_ptr())
+                .to_string_lossy()
+                .into_owned();
+
+            let detailed_status = DetailedConnectionStatus {
+                account_name: crate::memory::strings::softether_wide_to_rust(&status.AccountName),
+                active: status.Active,
+                connected: status.Connected,
+                session_status: status.SessionStatus as u32,
+                server_name,
+                server_port: status.ServerPort as u16,
+                server_product_name: std::ffi::CStr::from_ptr(status.ServerProductName.as_ptr())
+                    .to_string_lossy()
+                    .into_owned(),
+                server_product_version: status.ServerProductVer as u32,
+                server_product_build: status.ServerProductBuild as u32,
+            };
+
+            Ok(detailed_status)
         }
     }
 
     /// Check if the client is currently connected
     pub fn is_connected(&self) -> bool {
-        self.connected
+        matches!(self.state, ConnectionState::Connected)
     }
 
-    /// Get the active profile ID if connected
-    pub fn active_profile(&self) -> Option<&str> {
-        self.active_profile.as_deref()
+    /// Get the active profile if connected
+    pub fn active_profile(&self) -> Option<&VpnProfile> {
+        self.active_profile.as_ref()
     }
 
     /// Create a connection request structure for SoftEther FFI
@@ -242,12 +412,55 @@ pub enum ConnectionStatus {
     Error(String),
 }
 
+/// Detailed connection status information
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DetailedConnectionStatus {
+    /// Account name for this connection
+    pub account_name: String,
+    /// Whether the account is active
+    pub active: bool,
+    /// Whether currently connected
+    pub connected: bool,
+    /// Session status code
+    pub session_status: u32,
+    /// Server hostname/IP
+    pub server_name: String,
+    /// Server port
+    pub server_port: u16,
+    /// Server product name
+    pub server_product_name: String,
+    /// Server product version
+    pub server_product_version: u32,
+    /// Server product build number
+    pub server_product_build: u32,
+}
+
 impl Drop for SoftEtherClient {
     fn drop(&mut self) {
-        if self.connected {
+        if self.is_connected() {
             // Note: In a real implementation, we might want to make this async
-            // For now, we'll just log the issue
-            tracing::warn!("SoftEtherClient dropped while still connected");
+            // For now, we'll just log the issue and attempt cleanup
+            tracing::warn!("SoftEtherClient dropped while still connected - attempting cleanup");
+
+            // Try to disconnect synchronously (best effort)
+            if let Some(profile) = &self.active_profile {
+                use crate::memory::strings;
+                if let Ok(account_name_wide) = strings::rust_to_softether_wide(&profile.account_name) {
+                    let disconnect_req = crate::bindings::RPC_CLIENT_CONNECT {
+                        AccountName: account_name_wide,
+                    };
+
+                    if let Ok(disconnect_req) = crate::memory::malloc_box(disconnect_req) {
+                        unsafe {
+                            crate::bindings::CtDisconnect(
+                                self.client_handle,
+                                Box::into_raw(disconnect_req),
+                                0,
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         unsafe {
@@ -342,5 +555,47 @@ mod tests {
             message: "Test connection failed".into(),
         };
         assert!(error.to_string().contains("Test connection failed"));
+    }
+
+    #[test]
+    fn test_softether_error_mapping() {
+        // Test SoftEther error code mapping
+        let connect_failed = crate::Error::from_softether_error(crate::bindings::error_codes::ERR_CONNECT_FAILED);
+        assert_eq!(connect_failed.to_string(), "SoftEther error code 1: Connection to the server has failed");
+
+        let auth_failed = crate::Error::from_softether_error(crate::bindings::error_codes::ERR_AUTH_FAILED);
+        assert_eq!(auth_failed.to_string(), "SoftEther error code 9: Authentication failure");
+
+        let hub_not_found = crate::Error::from_softether_error(crate::bindings::error_codes::ERR_HUB_NOT_FOUND);
+        assert_eq!(hub_not_found.to_string(), "SoftEther error code 8: The HUB does not exist");
+
+        let unknown_error = crate::Error::from_softether_error(999);
+        assert_eq!(unknown_error.to_string(), "SoftEther error code 999: Unknown error");
+    }
+
+    #[test]
+    fn test_connection_state_transitions() {
+        // Test that state transitions work correctly
+        // Note: This test doesn't actually connect, just tests the state logic
+
+        // Test initial state
+        let profile = VpnProfile::default();
+        assert_eq!(ConnectionStatus::Disconnected, ConnectionStatus::Disconnected);
+
+        // Test state enum conversion
+        let state = ConnectionState::Disconnected;
+        assert!(!matches!(state, ConnectionState::Connected));
+
+        let state = ConnectionState::Connected;
+        assert!(matches!(state, ConnectionState::Connected));
+
+        let state = ConnectionState::Connecting;
+        assert!(matches!(state, ConnectionState::Connecting));
+
+        let state = ConnectionState::Disconnecting;
+        assert!(matches!(state, ConnectionState::Disconnecting));
+
+        let state = ConnectionState::Error("test".into());
+        assert!(matches!(state, ConnectionState::Error(_)));
     }
 }
