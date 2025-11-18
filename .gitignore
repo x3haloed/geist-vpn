@@ -126,6 +126,9 @@ SoftEtherVPN/_deps
 SoftEtherVPN/src/bin/
 SoftEtherVPN/src/build/
 
+# SoftEtherVPN runtime files
+hamcore.se2
+
 # Temporary files
 *.tmp
 *.temp

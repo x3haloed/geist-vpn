@@ -151,6 +151,9 @@ extern "C" {
     /// Initialize Mayaqua library (includes OS-specific setup)
     pub fn InitMayaqua(memcheck: bool, debug: bool, argc: c_int, argv: *mut *mut c_char);
 
+    /// Set the executable name for SoftEtherVPN
+    pub fn InitGetExeName(arg: *mut c_char);
+
     /// Initialize process-wide state (Mayaqua)
     pub fn InitProcessCallOnce();
 

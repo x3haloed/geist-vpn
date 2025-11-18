@@ -35,9 +35,20 @@ pub fn init() -> Result<()> {
     // Skip actual initialization during tests to avoid FFI issues
     #[cfg(not(test))]
     {
+        // Get the current executable path
+        let exe_path = std::env::current_exe()
+            .map_err(|e| Error::IoError(e))?
+            .to_string_lossy()
+            .to_string();
+
         // Initialize SoftEtherVPN internals
         // This will call the appropriate FFI functions
         unsafe {
+            // Set the executable name first (this is normally done in main() with argv[0])
+            let exe_path_cstr = std::ffi::CString::new(exe_path)
+                .map_err(|_| Error::Other("Invalid executable path".to_string()))?;
+            bindings::InitGetExeName(exe_path_cstr.as_ptr() as *mut i8);
+
             // Initialize Mayaqua (includes OS-specific setup like locks, resource limits)
             // This matches what the official vpnclient does in UnixServiceMain
             bindings::InitMayaqua(false, false, 0, std::ptr::null_mut());

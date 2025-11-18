@@ -108,9 +108,9 @@ impl GeistApp {
         let mut app = Self::default();
 
         // Initialize SoftEther
-        if let Err(e) = init() {
-            tracing::error!("Failed to initialize SoftEther: {}", e);
-        }
+        // if let Err(e) = init() {
+        //     tracing::error!("Failed to initialize SoftEther: {}", e);
+        // }
 
         // Initialize profile manager
         match ProfileManager::new() {

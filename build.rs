@@ -26,6 +26,21 @@ fn main() {
     let lib_dir = dst.join("lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
+    // Set rpath so the executable can find the dynamic libraries at runtime
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+
+    // Copy hamcore.se2 to the output directory so SoftEtherVPN can find it
+    let hamcore_src = dst.join("build").join("hamcore.se2");
+    let hamcore_dst = PathBuf::from("target").join("debug").join("hamcore.se2");
+
+    if hamcore_src.exists() {
+        std::fs::copy(&hamcore_src, &hamcore_dst).unwrap_or_else(|e| {
+            panic!("Failed to copy hamcore.se2: {}", e);
+        });
+    } else {
+        panic!("hamcore.se2 not found at {}", hamcore_src.display());
+    }
+
     // Link against the core SoftEtherVPN libraries (dynamic linking)
     println!("cargo:rustc-link-lib=dylib=cedar");
     println!("cargo:rustc-link-lib=dylib=mayaqua");
