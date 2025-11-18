@@ -4,13 +4,13 @@ Cargo.lock
 **/*.rs.bk
 *.pdb
 
-# Tauri
 # Config files
 .env
 .env.*
 !.env.example
 
 # Application data
+*vpn_client.config
 *.db
 *.db-journal
 

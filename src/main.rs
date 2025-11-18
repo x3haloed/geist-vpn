@@ -36,6 +36,9 @@ pub enum Message {
     ProfileModalUpdateProtocol(geist_vpn::profile::VpnProtocol),
     ProfileModalUpdateAccount(String),
     ProfileModalUpdateTimeout(String),
+    ProfileModalUpdateAuthMethodType(crate::ui::modal::AuthMethodType),
+    ProfileModalUpdateUsername(String),
+    ProfileModalUpdatePassword(String),
     ProfileModalSave,
 
     // UI state messages
@@ -352,6 +355,21 @@ impl GeistApp {
 
             Message::ProfileModalUpdateTimeout(timeout) => {
                 self.profile_modal_state.timeout = timeout;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateAuthMethodType(auth_method_type) => {
+                self.profile_modal_state.auth_method_type = auth_method_type;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateUsername(username) => {
+                self.profile_modal_state.username = username;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdatePassword(password) => {
+                self.profile_modal_state.password = password;
                 iced::Task::none()
             }
 
