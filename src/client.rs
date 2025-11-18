@@ -485,6 +485,8 @@ mod tests {
         // For now, we'll just test the structure
         let profile = VpnProfile::default();
         assert!(!profile.name.is_empty());
+        assert!(!profile.id.is_empty());
+        assert!(profile.metadata.version >= 1);
     }
 
     #[test]
@@ -493,6 +495,7 @@ mod tests {
         let mut profile = VpnProfile {
             id: "test_profile".into(),
             name: "Test Profile".into(),
+            description: "Test profile description".into(),
             host: "vpn.example.com".into(),
             port: 443,
             protocol: VpnProtocol::SslVpn,
@@ -503,6 +506,7 @@ mod tests {
             account_name: "testaccount".into(),
             timeout: 30,
             options: HashMap::new(),
+            metadata: crate::profile::ProfileMetadata::default(),
         };
 
         // Valid profile should pass
