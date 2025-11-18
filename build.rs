@@ -26,7 +26,7 @@ fn main() {
     let lib_dir = dst.join("lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
-    // Link against the core SoftEtherVPN libraries (dynamic for now)
+    // Link against the core SoftEtherVPN libraries (dynamic linking)
     println!("cargo:rustc-link-lib=dylib=cedar");
     println!("cargo:rustc-link-lib=dylib=mayaqua");
 

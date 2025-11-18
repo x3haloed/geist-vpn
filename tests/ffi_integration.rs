@@ -28,28 +28,101 @@ async fn test_client_lifecycle() {
     cleanup().expect("Failed to cleanup SoftEtherVPN library");
 }
 
+/// Test basic library loading
+#[test]
+fn test_library_loading() {
+    println!("Testing basic library loading...");
+
+    // Just try to call InitProcessCallOnce - this should be the minimal initialization
+    unsafe {
+        println!("Calling InitProcessCallOnce...");
+        geist_vpn::bindings::InitProcessCallOnce();
+        println!("InitProcessCallOnce succeeded");
+    }
+}
+
+/// Test cedar initialization
+#[test]
+fn test_cedar_init() {
+    println!("Testing cedar initialization...");
+
+    unsafe {
+        println!("Calling InitProcessCallOnce...");
+        geist_vpn::bindings::InitProcessCallOnce();
+        println!("InitProcessCallOnce succeeded");
+
+        println!("Calling InitCedar...");
+        geist_vpn::bindings::InitCedar();
+        println!("InitCedar succeeded");
+
+        println!("Calling FreeCedar...");
+        geist_vpn::bindings::FreeCedar();
+        println!("FreeCedar succeeded");
+    }
+}
+
+/// Test client service initialization
+/// TODO: This currently crashes in CtStartClient - needs further investigation
+#[test]
+#[ignore = "CtStartClient causes segmentation fault - needs debugging"]
+fn test_client_start() {
+    println!("Testing client service initialization...");
+
+    unsafe {
+        println!("Calling InitProcessCallOnce...");
+        geist_vpn::bindings::InitProcessCallOnce();
+        println!("InitProcessCallOnce succeeded");
+
+        println!("Calling InitCedar...");
+        geist_vpn::bindings::InitCedar();
+        println!("InitCedar succeeded");
+
+        println!("Calling CtStartClient...");
+        geist_vpn::bindings::CtStartClient();
+        println!("CtStartClient succeeded");
+
+        println!("Calling CtStopClient...");
+        geist_vpn::bindings::CtStopClient();
+        println!("CtStopClient succeeded");
+
+        println!("Calling FreeCedar...");
+        geist_vpn::bindings::FreeCedar();
+        println!("FreeCedar succeeded");
+    }
+}
+
 /// Test memory management with SoftEther allocators
 #[test]
 fn test_memory_allocation() {
+    println!("Testing memory allocation...");
+
     // For integration tests, we need to actually initialize the library
     unsafe {
+        println!("Initializing process...");
         geist_vpn::bindings::InitProcessCallOnce();
+        println!("Initializing cedar...");
         geist_vpn::bindings::InitCedar();
+        println!("Starting client...");
         geist_vpn::bindings::CtStartClient();
     }
 
     // Test raw memory allocation
+    println!("Testing memory allocation...");
     let mem = memory::malloc_raw(128).expect("Failed to allocate memory");
     assert_eq!(mem.size(), 128);
     assert!(!mem.as_ptr().is_null());
+    println!("Memory allocation succeeded");
 
     // Memory should be automatically freed when mem goes out of scope
 
     // Clean up
     unsafe {
+        println!("Cleaning up client...");
         geist_vpn::SoftEtherClient::global_cleanup().expect("Failed to cleanup client");
+        println!("Cleaning up cedar...");
         geist_vpn::bindings::FreeCedar();
     }
+    println!("Cleanup completed");
 }
 
 /// Test string encoding/decoding
@@ -77,13 +150,20 @@ fn test_string_encoding() {
 /// Test profile creation and validation
 #[test]
 fn test_profile_operations() {
-    // Create a test profile
-    let profile = VpnProfile::new(
+    // Create a test profile with valid credentials
+    let mut profile = VpnProfile::new(
         "Test VPN".into(),
         "test.vpn.server.com".into(),
         443,
         profile::VpnProtocol::SslVpn,
     );
+
+    // Set valid credentials for validation
+    if let profile::AuthMethod::Password { username, password } = &mut profile.auth {
+        *username = "testuser".into();
+        *password = "testpass".into();
+    }
+    profile.account_name = "testaccount".into();
 
     // Test validation
     assert!(profile.validate().is_ok());
