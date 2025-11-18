@@ -31,12 +31,25 @@ async fn test_client_lifecycle() {
 /// Test memory management with SoftEther allocators
 #[test]
 fn test_memory_allocation() {
+    // For integration tests, we need to actually initialize the library
+    unsafe {
+        geist_vpn::bindings::InitProcessCallOnce();
+        geist_vpn::bindings::InitCedar();
+        geist_vpn::bindings::CtStartClient();
+    }
+
     // Test raw memory allocation
     let mem = memory::malloc_raw(128).expect("Failed to allocate memory");
     assert_eq!(mem.size(), 128);
     assert!(!mem.as_ptr().is_null());
 
     // Memory should be automatically freed when mem goes out of scope
+
+    // Clean up
+    unsafe {
+        geist_vpn::SoftEtherClient::global_cleanup().expect("Failed to cleanup client");
+        geist_vpn::bindings::FreeCedar();
+    }
 }
 
 /// Test string encoding/decoding

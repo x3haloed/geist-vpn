@@ -146,13 +146,16 @@ pub struct RPC_CLIENT_GET_ACCOUNT {
     // ... other fields
 }
 
-// Library initialization (these may not exist, need to check)
+// Library initialization
 extern "C" {
-    /// Initialize SoftEtherVPN library (if available)
-    pub fn InitSoftEther() -> bool;
+    /// Initialize process-wide state (Mayaqua)
+    pub fn InitProcessCallOnce();
 
-    /// Cleanup SoftEtherVPN library (if available)
-    pub fn FreeSoftEther() -> bool;
+    /// Initialize Cedar VPN library
+    pub fn InitCedar();
+
+    /// Free Cedar VPN library
+    pub fn FreeCedar();
 }
 
 // String utilities

@@ -30,6 +30,10 @@ pub fn init() -> Result<()> {
         // Initialize SoftEtherVPN internals
         // This will call the appropriate FFI functions
         unsafe {
+            // Initialize process-wide state
+            bindings::InitProcessCallOnce();
+            // Initialize Cedar VPN library
+            bindings::InitCedar();
             // Start the SoftEther client service
             bindings::CtStartClient();
         }
@@ -54,6 +58,10 @@ pub fn cleanup() -> Result<()> {
     {
         // Stop the SoftEther client service
         SoftEtherClient::global_cleanup()?;
+        unsafe {
+            // Cleanup Cedar VPN library
+            bindings::FreeCedar();
+        }
         tracing::info!("SoftEtherVPN library cleaned up");
     }
 

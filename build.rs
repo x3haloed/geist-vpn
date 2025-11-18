@@ -13,7 +13,7 @@ fn main() {
     // Configure CMake for static library builds
     let mut cmake_config = cmake::Config::new(&softether_path);
 
-    // Set build options for static libraries
+    // Set build options for static library builds
     cmake_config
         .define("BUILD_SHARED_LIBS", "OFF")
         .define("BUILD_ONLY_LIBRARIES", "ON") // Custom flag to build only libraries
