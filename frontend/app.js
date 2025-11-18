@@ -28,8 +28,10 @@ const statusDetails = document.getElementById('status-details');
 
 // Application State
 let currentProfiles = [];
+let allProfiles = [];
 let currentStatus = { connected: false, profile_name: null, status_message: 'Disconnected' };
 let editingProfileId = null;
+let currentView = 'all'; // 'all', 'favorites', 'recent'
 
 // Initialize the application
 async function init() {
@@ -44,6 +46,9 @@ async function init() {
 
         // Set up event listeners
         setupEventListeners();
+
+        // Initialize view buttons
+        await switchView('all');
 
         // Start status polling
         startStatusPolling();
@@ -67,6 +72,11 @@ function setupEventListeners() {
     document.getElementById('cancel-btn').addEventListener('click', closeProfileModal);
     profileForm.addEventListener('submit', handleProfileSubmit);
 
+    // Quick access buttons
+    document.getElementById('show-favorites-btn').addEventListener('click', () => switchView('favorites'));
+    document.getElementById('show-recent-btn').addEventListener('click', () => switchView('recent'));
+    document.getElementById('show-all-btn').addEventListener('click', () => switchView('all'));
+
     // Modal outside click
     profileModal.addEventListener('click', (e) => {
         if (e.target === profileModal) closeProfileModal();
@@ -89,13 +99,13 @@ async function handleConnect() {
     setConnectButtonLoading(true);
 
     try {
-        const result = await invoke('connect_vpn', { profileId });
+        const result = invoke('connect_vpn', { profileId });
         updateConnectionStatus(result);
-        showSuccess('Connected to VPN successfully');
+        showSuccess('Connected to VPN successfully (simulated)');
     } catch (error) {
         console.error('Connection failed:', error);
         showError('Failed to connect: ' + error);
-        await updateConnectionStatus();
+        updateConnectionStatus();
     } finally {
         setConnectButtonLoading(false);
     }
@@ -105,13 +115,13 @@ async function handleDisconnect() {
     setConnectButtonLoading(true);
 
     try {
-        const result = await invoke('disconnect_vpn');
+        const result = invoke('disconnect_vpn');
         updateConnectionStatus(result);
-        showSuccess('Disconnected from VPN');
+        showSuccess('Disconnected from VPN (simulated)');
     } catch (error) {
         console.error('Disconnection failed:', error);
         showError('Failed to disconnect: ' + error);
-        await updateConnectionStatus();
+        updateConnectionStatus();
     } finally {
         setConnectButtonLoading(false);
     }
@@ -121,12 +131,39 @@ async function handleDisconnect() {
 async function loadProfiles() {
     try {
         const result = await invoke('list_profiles');
-        currentProfiles = result.profiles;
+        allProfiles = result.profiles;
+
+        // Load profiles based on current view
+        await loadProfilesForCurrentView();
 
         updateProfileSelect();
-        updateProfilesList();
     } catch (error) {
         console.error('Failed to load profiles:', error);
+        showError('Failed to load VPN profiles');
+    }
+}
+
+async function loadProfilesForCurrentView() {
+    try {
+        let profiles;
+        switch (currentView) {
+            case 'favorites':
+                const favResult = await invoke('get_favorite_profiles');
+                profiles = favResult.profiles;
+                break;
+            case 'recent':
+                const recentResult = await invoke('get_recent_profiles', { limit: 10 });
+                profiles = recentResult.profiles;
+                break;
+            default:
+                profiles = allProfiles;
+        }
+
+        currentProfiles = profiles;
+        updateProfilesList();
+        updateProfilesTitle();
+    } catch (error) {
+        console.error('Failed to load profiles for view:', error);
         showError('Failed to load VPN profiles');
     }
 }
@@ -142,12 +179,36 @@ function updateProfileSelect() {
     });
 }
 
+function updateProfilesTitle() {
+    const titleElement = document.getElementById('profiles-title');
+    switch (currentView) {
+        case 'favorites':
+            titleElement.textContent = '⭐ Favorite VPN Profiles';
+            break;
+        case 'recent':
+            titleElement.textContent = '🕒 Recently Used VPN Profiles';
+            break;
+        default:
+            titleElement.textContent = 'VPN Profiles';
+    }
+}
+
 function updateProfilesList() {
     if (currentProfiles.length === 0) {
+        let emptyMessage = 'No VPN profiles configured yet.';
+        switch (currentView) {
+            case 'favorites':
+                emptyMessage = 'No favorite profiles yet. Mark profiles as favorites to see them here.';
+                break;
+            case 'recent':
+                emptyMessage = 'No recently used profiles yet. Connect to profiles to see them here.';
+                break;
+        }
+
         profilesList.innerHTML = `
             <div class="empty-state">
-                <p>No VPN profiles configured yet.</p>
-                <p>Click "Add Profile" to get started.</p>
+                <p>${emptyMessage}</p>
+                ${currentView === 'all' ? '<p>Click "Add Profile" to get started.</p>' : ''}
             </div>
         `;
         return;
@@ -160,12 +221,18 @@ function updateProfilesList() {
         profileElement.className = 'profile-item';
         profileElement.innerHTML = `
             <div class="profile-info">
-                <h4>${profile.name}</h4>
+                <h4>${profile.name} ${profile.favorite ? '⭐' : ''}</h4>
                 <div class="profile-details">
                     ${profile.host} • ${profile.protocol}
+                    ${profile.description ? `<br><small>${profile.description}</small>` : ''}
+                    ${profile.last_used_at ? `<br><small>Last used: ${new Date(profile.last_used_at).toLocaleDateString()}</small>` : ''}
+                    ${profile.usage_count > 0 ? `<br><small>Used ${profile.usage_count} time${profile.usage_count === 1 ? '' : 's'}</small>` : ''}
                 </div>
             </div>
             <div class="profile-actions">
+                <button class="btn btn-secondary" onclick="toggleFavorite('${profile.id}')">
+                    ${profile.favorite ? '★' : '☆'}
+                </button>
                 <button class="btn btn-secondary" onclick="editProfile('${profile.id}')">
                     Edit
                 </button>
@@ -234,6 +301,7 @@ async function handleProfileSubmit(e) {
 
         closeProfileModal();
         await loadProfiles();
+        await switchView(currentView); // Refresh current view
     } catch (error) {
         console.error('Failed to save profile:', error);
         showError('Failed to save profile: ' + error);
@@ -251,23 +319,60 @@ async function deleteProfile(profileId) {
         await invoke('delete_profile', { profileId });
         showSuccess('Profile deleted successfully');
         await loadProfiles();
+        await switchView(currentView); // Refresh current view
     } catch (error) {
         console.error('Failed to delete profile:', error);
         showError('Failed to delete profile: ' + error);
     }
 }
 
-function editProfile(profileId) {
-    // For now, we'll just open the modal in add mode
-    // In a full implementation, we'd load the existing profile data
-    openProfileModal(profileId);
+async function editProfile(profileId) {
+    try {
+        const profile = await invoke('get_profile', { profileId });
+
+        modalTitle.textContent = 'Edit VPN Profile';
+        profileNameInput.value = profile.name;
+        profileHostInput.value = profile.host;
+        profilePortInput.value = profile.port;
+        // Protocol is stored as an enum, extract the variant name
+        profileProtocolSelect.value = profile.protocol;
+        profileAccountInput.value = profile.account_name || '';
+        profileTimeoutInput.value = profile.timeout;
+
+        openProfileModal(profileId);
+    } catch (error) {
+        console.error('Failed to load profile for editing:', error);
+        showError('Failed to load profile data');
+    }
+}
+
+async function toggleFavorite(profileId) {
+    try {
+        await invoke('toggle_profile_favorite', { profileId });
+        await loadProfilesForCurrentView();
+        showSuccess('Favorite status updated');
+    } catch (error) {
+        console.error('Failed to toggle favorite:', error);
+        showError('Failed to update favorite status');
+    }
+}
+
+async function switchView(view) {
+    currentView = view;
+
+    // Update button states
+    document.getElementById('show-favorites-btn').className = view === 'favorites' ? 'btn btn-primary' : 'btn btn-secondary';
+    document.getElementById('show-recent-btn').className = view === 'recent' ? 'btn btn-primary' : 'btn btn-secondary';
+    document.getElementById('show-all-btn').className = view === 'all' ? 'btn btn-primary' : 'btn btn-secondary';
+
+    await loadProfilesForCurrentView();
 }
 
 // Status Management
 async function updateConnectionStatus(status = null) {
     try {
         if (!status) {
-            status = await invoke('get_connection_status');
+            status = invoke('get_connection_status');
         }
 
         currentStatus = status;
@@ -322,7 +427,7 @@ function startStatusPolling() {
     // Poll status every 5 seconds
     setInterval(async () => {
         try {
-            await updateConnectionStatus();
+            updateConnectionStatus();
         } catch (error) {
             console.error('Status polling failed:', error);
         }
@@ -365,3 +470,4 @@ document.addEventListener('DOMContentLoaded', init);
 // Make functions global for onclick handlers
 window.editProfile = editProfile;
 window.deleteProfile = deleteProfile;
+window.toggleFavorite = toggleFavorite;

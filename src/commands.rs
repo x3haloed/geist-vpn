@@ -3,16 +3,28 @@
 //! These functions are exposed to the frontend JavaScript/TypeScript code
 //! and provide the bridge between the GUI and the VPN functionality.
 
-use geist_vpn::error::Result;
 use geist_vpn::profile::{ProfileManager, VpnProfile};
 use serde::{Deserialize, Serialize};
 
+// Note: Using per-command clients for now due to Send/Sync issues with raw pointers
+// TODO: Refactor SoftEtherClient to be thread-safe for global state
+
 /// Connection status response
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ConnectionStatus {
     pub connected: bool,
     pub profile_name: Option<String>,
     pub status_message: String,
+}
+
+/// Detailed connection status response
+#[derive(Serialize, Deserialize)]
+pub struct DetailedStatus {
+    pub status: ConnectionStatus,
+    pub active_profile: Option<VpnProfile>,
+    pub connection_time: Option<String>,
+    pub bytes_sent: Option<u64>,
+    pub bytes_received: Option<u64>,
 }
 
 /// Profile list response
@@ -28,45 +40,49 @@ pub struct ProfileSummary {
     pub name: String,
     pub host: String,
     pub protocol: String,
+    pub description: String,
+    pub favorite: bool,
+    pub last_used_at: Option<String>,
+    pub usage_count: u32,
 }
 
 /// Connect to VPN command
 #[tauri::command]
 pub fn connect_vpn(profile_id: String) -> std::result::Result<ConnectionStatus, String> {
-    // For now, create a new client each time
-    // TODO: Use a global client instance
-    let mut client = geist_vpn::SoftEtherClient::new().map_err(|e| e.to_string())?;
-
-    // Load the profile
     let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
     let profile = profile_manager.get_profile(&profile_id).map_err(|e| e.to_string())?;
 
-    // For now, just return success without actually connecting
-    // TODO: Implement actual connection
+    // Mark profile as used
+    let mut updated_profile = profile.clone();
+    updated_profile.mark_as_used();
+    profile_manager.save_profile(&updated_profile).map_err(|e| e.to_string())?;
+
+    // TODO: Implement actual VPN connection
+    // For now, just return success
     Ok(ConnectionStatus {
         connected: true,
-        profile_name: Some(profile.name),
-        status_message: "Connected successfully".into(),
+        profile_name: Some(profile.name.clone()),
+        status_message: format!("Connected to {} (simulated)", profile.name),
     })
 }
 
 /// Disconnect from VPN command
 #[tauri::command]
 pub fn disconnect_vpn() -> std::result::Result<ConnectionStatus, String> {
-    // For now, just return success without actually disconnecting
-    // TODO: Implement actual disconnection
+    // TODO: Implement actual VPN disconnection
+    // For now, just return success
     Ok(ConnectionStatus {
         connected: false,
         profile_name: None,
-        status_message: "Disconnected successfully".into(),
+        status_message: "Disconnected successfully (simulated)".into(),
     })
 }
 
 /// Get current connection status
 #[tauri::command]
 pub fn get_connection_status() -> std::result::Result<ConnectionStatus, String> {
-    // For now, just return disconnected status
-    // TODO: Implement actual status checking
+    // Note: Without global state, we can't track connection status
+    // In a real implementation, we'd have a global connection manager
     Ok(ConnectionStatus {
         connected: false,
         profile_name: None,
@@ -87,6 +103,10 @@ pub fn list_profiles() -> std::result::Result<ProfileList, String> {
             name: p.name,
             host: p.host,
             protocol: format!("{:?}", p.protocol),
+            description: p.description,
+            favorite: p.metadata.favorite,
+            last_used_at: p.metadata.last_used_at.map(|dt| dt.to_rfc3339()),
+            usage_count: p.metadata.usage_count,
         })
         .collect();
 
@@ -112,6 +132,73 @@ pub fn delete_profile(profile_id: String) -> std::result::Result<(), String> {
     profile_manager.delete_profile(&profile_id).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+/// Get a single VPN profile for editing
+#[tauri::command]
+pub fn get_profile(profile_id: String) -> std::result::Result<VpnProfile, String> {
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    let profile = profile_manager.get_profile(&profile_id).map_err(|e| e.to_string())?;
+
+    Ok(profile)
+}
+
+/// Toggle favorite status of a profile
+#[tauri::command]
+pub fn toggle_profile_favorite(profile_id: String) -> std::result::Result<(), String> {
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    let mut profile = profile_manager.get_profile(&profile_id).map_err(|e| e.to_string())?;
+
+    profile.toggle_favorite();
+    profile_manager.save_profile(&profile).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Get favorite profiles
+#[tauri::command]
+pub fn get_favorite_profiles() -> std::result::Result<ProfileList, String> {
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    let profiles = profile_manager.get_favorite_profiles().map_err(|e| e.to_string())?;
+
+    let profiles = profiles
+        .into_iter()
+        .map(|p| ProfileSummary {
+            id: p.id,
+            name: p.name,
+            host: p.host,
+            protocol: format!("{:?}", p.protocol),
+            description: p.description,
+            favorite: p.metadata.favorite,
+            last_used_at: p.metadata.last_used_at.map(|dt| dt.to_rfc3339()),
+            usage_count: p.metadata.usage_count,
+        })
+        .collect();
+
+    Ok(ProfileList { profiles })
+}
+
+/// Get recently used profiles
+#[tauri::command]
+pub fn get_recent_profiles(limit: usize) -> std::result::Result<ProfileList, String> {
+    let profile_manager = geist_vpn::profile::ProfileManager::new().map_err(|e| e.to_string())?;
+    let profiles = profile_manager.get_recent_profiles(limit).map_err(|e| e.to_string())?;
+
+    let profiles = profiles
+        .into_iter()
+        .map(|p| ProfileSummary {
+            id: p.id,
+            name: p.name,
+            host: p.host,
+            protocol: format!("{:?}", p.protocol),
+            description: p.description,
+            favorite: p.metadata.favorite,
+            last_used_at: p.metadata.last_used_at.map(|dt| dt.to_rfc3339()),
+            usage_count: p.metadata.usage_count,
+        })
+        .collect();
+
+    Ok(ProfileList { profiles })
 }
 
 /// Create a new profile with default values

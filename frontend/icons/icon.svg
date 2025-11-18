@@ -1,0 +1,7 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="128" fill="#1a1a1a"/>
+  <circle cx="256" cy="256" r="160" fill="#007acc" stroke="#ffffff" stroke-width="8"/>
+  <path d="M256 136 L320 200 L256 264 L192 200 Z" fill="#ffffff"/>
+  <circle cx="256" cy="200" r="16" fill="#007acc"/>
+  <text x="256" y="340" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="24" font-weight="bold">VPN</text>
+</svg>

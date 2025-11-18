@@ -145,6 +145,17 @@ body {
     margin-bottom: var(--spacing-md);
 }
 
+/* Quick Access Panel */
+.quick-access-panel .panel-title {
+    margin-bottom: var(--spacing-md);
+}
+
+.quick-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+}
+
 /* Connection Panel */
 .profile-selector {
     display: flex;

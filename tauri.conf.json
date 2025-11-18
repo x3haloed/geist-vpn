@@ -1,17 +1,15 @@
 {
-  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
   "productName": "Geist VPN",
   "version": "0.1.0",
   "identifier": "com.geist.vpn",
   "build": {
-    "beforeBuildCommand": "",
-    "beforeDevCommand": "",
     "frontendDist": "frontend"
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "category": "Productivity",
-    "copyright": ""
+    "icon": [
+      "frontend/icons/icon.svg"
+    ]
   }
 }

@@ -400,6 +400,11 @@ impl SoftEtherClient {
 
         Ok(raw_mem)
     }
+
+    /// Get the name of the currently active profile
+    pub fn get_active_profile_name(&self) -> Option<String> {
+        self.active_profile.as_ref().map(|p| p.name.clone())
+    }
 }
 
 /// Connection status enum
