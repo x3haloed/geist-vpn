@@ -39,6 +39,7 @@ pub enum Message {
     ProfileModalUpdateAuthMethodType(crate::ui::modal::AuthMethodType),
     ProfileModalUpdateUsername(String),
     ProfileModalUpdatePassword(String),
+    ProfileModalUpdateCertificatePath(String),
     ProfileModalSave,
 
     // UI state messages
@@ -370,6 +371,11 @@ impl GeistApp {
 
             Message::ProfileModalUpdatePassword(password) => {
                 self.profile_modal_state.password = password;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateCertificatePath(certificate_path) => {
+                self.profile_modal_state.certificate_path = certificate_path;
                 iced::Task::none()
             }
 

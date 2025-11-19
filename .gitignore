@@ -159,3 +159,5 @@ playwright/.cache/
 # Backup files
 *.orig
 *.rej
+
+server_cert.pem

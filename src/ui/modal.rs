@@ -32,6 +32,7 @@ pub struct ProfileModalState {
     pub auth_method_type: AuthMethodType,
     pub username: String,
     pub password: String,
+    pub certificate_path: String,
     pub editing: bool,
 }
 
@@ -47,6 +48,7 @@ impl Default for ProfileModalState {
             auth_method_type: AuthMethodType::Password,
             username: String::new(),
             password: String::new(),
+            certificate_path: String::new(),
             editing: false,
         }
     }
@@ -61,6 +63,7 @@ impl ProfileModalState {
             _ => (AuthMethodType::Password, String::new(), String::new()),
         };
 
+        let certificate_path = profile.options.get("certificate_path").unwrap_or(&String::new()).clone();
         Self {
             name: profile.name.clone(),
             host: profile.host.clone(),
@@ -71,6 +74,7 @@ impl ProfileModalState {
             auth_method_type,
             username,
             password,
+            certificate_path,
             editing: true,
         }
     }
@@ -125,6 +129,11 @@ impl ProfileModalState {
         profile.account_name = self.account_name.clone();
         profile.timeout = timeout;
 
+        // Add certificate path if provided
+        if !self.certificate_path.is_empty() {
+            profile.options.insert("certificate_path".to_string(), self.certificate_path.clone());
+        }
+
         // If editing, preserve the original ID
         if let Some(existing_id) = id {
             profile.id = existing_id;
@@ -142,9 +151,13 @@ impl ProfileModalState {
 
         // Check auth-specific requirements
         match self.auth_method_type {
-            AuthMethodType::Password => !self.username.is_empty() && !self.password.is_empty(),
-            AuthMethodType::Radius => true, // RADIUS doesn't need credentials
-            AuthMethodType::NtDomain => !self.username.is_empty() && !self.password.is_empty(),
+            AuthMethodType::Password => {
+                !self.username.is_empty() && !self.password.is_empty() && !self.account_name.is_empty()
+            }
+            AuthMethodType::Radius => !self.account_name.is_empty(), // RADIUS needs account name
+            AuthMethodType::NtDomain => {
+                !self.username.is_empty() && !self.password.is_empty() && !self.account_name.is_empty()
+            }
         }
     }
 }
@@ -182,7 +195,7 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
     )
     .placeholder("Select Protocol");
 
-    let account_input = text_input("Account Name (optional)", &state.account_name)
+    let account_input = text_input("Account Name (Hub/Username)", &state.account_name)
         .on_input(|value| Message::ProfileModalUpdateAccount(value))
         .padding(8);
 
@@ -211,6 +224,10 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
         .on_input(|value| Message::ProfileModalUpdatePassword(value))
         .padding(8)
         .secure(true);
+
+    let certificate_input = text_input("Certificate Path (optional)", &state.certificate_path)
+        .on_input(|value| Message::ProfileModalUpdateCertificatePath(value))
+        .padding(8);
 
     let cancel_button = button(text("Cancel"))
         .on_press(Message::ModalClosed)
@@ -268,6 +285,7 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
         row![text("Auth Method").size(14), auth_picker].spacing(8).align_y(iced::Alignment::Center),
         row![text("Username").size(14), username_input].spacing(8).align_y(iced::Alignment::Center),
         row![text("Password").size(14), password_input].spacing(8).align_y(iced::Alignment::Center),
+        row![text("Certificate Path").size(14), certificate_input].spacing(8).align_y(iced::Alignment::Center),
         row![text("Account Name").size(14), account_input].spacing(8).align_y(iced::Alignment::Center),
         row![text("Timeout").size(14), timeout_input].spacing(8).align_y(iced::Alignment::Center),
     ]
