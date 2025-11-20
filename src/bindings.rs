@@ -269,6 +269,23 @@ extern "C" {
     /// Create a new RPC session
     pub fn NewRpcSession(cedar: *mut CEDAR, option: *mut CLIENT_OPTION) -> *mut SESSION;
 
+    /// Create a new RPC session with error reporting
+    pub fn NewRpcSessionEx(
+        cedar: *mut CEDAR,
+        option: *mut CLIENT_OPTION,
+        err: *mut UINT,
+        client_str: *const c_char,
+    ) -> *mut SESSION;
+
+    /// Create a new RPC session with extended parameters
+    pub fn NewRpcSessionEx2(
+        cedar: *mut CEDAR,
+        option: *mut CLIENT_OPTION,
+        err: *mut UINT,
+        client_str: *const c_char,
+        h_wnd: *mut c_void,
+    ) -> *mut SESSION;
+
     /// Release an RPC session
     pub fn ReleaseSession(session: *mut SESSION);
 
