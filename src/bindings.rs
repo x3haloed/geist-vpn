@@ -14,7 +14,13 @@ pub type SoftEtherBool = std::os::raw::c_uchar; // SoftEther uses UCHAR for bool
 // Maximum string lengths (from SoftEther constants)
 pub const MAX_ACCOUNT_NAME_LEN: usize = 127;
 pub const MAX_HOST_NAME_LEN: usize = 255;
+pub const MAX_HUBNAME_LEN: usize = 255;
+pub const MAX_DEVICE_NAME_LEN: usize = 31;
+pub const HTTP_CUSTOM_HEADER_MAX_SIZE: usize = 1024;
+pub const PROXY_MAX_USERNAME_LEN: usize = 255;
+pub const PROXY_MAX_PASSWORD_LEN: usize = 255;
 pub const SHA1_SIZE: usize = 20;
+pub const PROXY_DIRECT: u32 = 0;
 
 // Memory management (SoftEther custom allocators)
 extern "C" {
@@ -152,6 +158,82 @@ pub struct RPC_CLIENT_GET_ACCOUNT {
     // ... other fields
 }
 
+#[repr(C)]
+pub struct IP {
+    pub address: [u8; 16],
+    pub ipv6_scope_id: u32,
+}
+
+#[repr(C)]
+pub struct CLIENT_OPTION {
+    pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1],
+    pub Hostname: [c_char; MAX_HOST_NAME_LEN + 1],
+    pub Port: UINT,
+    pub PortUDP: UINT,
+    pub ProxyType: UINT,
+    pub ProxyName: [c_char; MAX_HOST_NAME_LEN + 1],
+    pub ProxyPort: UINT,
+    pub ProxyUsername: [c_char; PROXY_MAX_USERNAME_LEN + 1],
+    pub ProxyPassword: [c_char; PROXY_MAX_PASSWORD_LEN + 1],
+    pub NumRetry: UINT,
+    pub RetryInterval: UINT,
+    pub HubName: [c_char; MAX_HUBNAME_LEN + 1],
+    pub MaxConnection: UINT,
+    pub UseEncrypt: bool,
+    pub pad1: [u8; 3],
+    pub UseCompress: bool,
+    pub pad2: [u8; 3],
+    pub HalfConnection: bool,
+    pub pad3: [u8; 3],
+    pub NoRoutingTracking: bool,
+    pub pad4: [u8; 3],
+    pub DeviceName: [c_char; MAX_DEVICE_NAME_LEN + 1],
+    pub AdditionalConnectionInterval: UINT,
+    pub ConnectionDisconnectSpan: UINT,
+    pub HideStatusWindow: bool,
+    pub pad5: [u8; 3],
+    pub HideNicInfoWindow: bool,
+    pub pad6: [u8; 3],
+    pub RequireMonitorMode: bool,
+    pub pad7: [u8; 3],
+    pub RequireBridgeRoutingMode: bool,
+    pub pad8: [u8; 3],
+    pub DisableQoS: bool,
+    pub pad9: [u8; 3],
+    pub FromAdminPack: bool,
+    pub pad10: [u8; 3],
+    pub pad11: [u8; 4],
+    pub NoUdpAcceleration: bool,
+    pub pad12: [u8; 3],
+    pub HostUniqueKey: [u8; SHA1_SIZE],
+    pub CustomHttpHeader: [c_char; HTTP_CUSTOM_HEADER_MAX_SIZE],
+    pub HintStr: [c_char; MAX_HOST_NAME_LEN + 1],
+    pub BindLocalIP: IP,
+    pub BindLocalPort: UINT,
+}
+
+impl Default for CLIENT_OPTION {
+    fn default() -> Self {
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+#[repr(C)]
+pub struct TOKEN_LIST {
+    pub NumTokens: UINT,
+    pub Token: *mut *mut c_char,
+}
+
+#[repr(C)]
+pub struct CEDAR {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct SESSION {
+    _private: [u8; 0],
+}
+
 // Library initialization
 extern "C" {
     /// Load CA certificate into client
@@ -177,6 +259,24 @@ extern "C" {
 
     /// Free Cedar VPN library
     pub fn FreeCedar();
+
+    /// Create a new Cedar context
+    pub fn NewCedar(server_x: *mut c_void, server_k: *mut c_void) -> *mut CEDAR;
+
+    /// Release a Cedar context
+    pub fn ReleaseCedar(cedar: *mut CEDAR);
+
+    /// Create a new RPC session
+    pub fn NewRpcSession(cedar: *mut CEDAR, option: *mut CLIENT_OPTION) -> *mut SESSION;
+
+    /// Release an RPC session
+    pub fn ReleaseSession(session: *mut SESSION);
+
+    /// Enumerate hub names on the connected server
+    pub fn EnumHub(session: *mut SESSION) -> *mut TOKEN_LIST;
+
+    /// Free a token list
+    pub fn FreeToken(tokens: *mut TOKEN_LIST);
 }
 
 // String utilities

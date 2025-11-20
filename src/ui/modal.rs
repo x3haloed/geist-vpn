@@ -27,6 +27,7 @@ pub struct ProfileModalState {
     pub host: String,
     pub port: String,
     pub protocol: VpnProtocol,
+    pub hub_name: String,
     pub account_name: String,
     pub timeout: String,
     pub auth_method_type: AuthMethodType,
@@ -34,6 +35,9 @@ pub struct ProfileModalState {
     pub password: String,
     pub certificate_path: String,
     pub editing: bool,
+    pub available_hubs: Vec<String>,
+    pub fetching_hubs: bool,
+    pub hub_fetch_error: Option<String>,
 }
 
 impl Default for ProfileModalState {
@@ -43,6 +47,7 @@ impl Default for ProfileModalState {
             host: String::new(),
             port: "443".to_string(),
             protocol: VpnProtocol::SslVpn,
+            hub_name: String::new(),
             account_name: String::new(),
             timeout: "30".to_string(),
             auth_method_type: AuthMethodType::Password,
@@ -50,6 +55,9 @@ impl Default for ProfileModalState {
             password: String::new(),
             certificate_path: String::new(),
             editing: false,
+            available_hubs: Vec::new(),
+            fetching_hubs: false,
+            hub_fetch_error: None,
         }
     }
 }
@@ -69,6 +77,7 @@ impl ProfileModalState {
             host: profile.host.clone(),
             port: profile.port.to_string(),
             protocol: profile.protocol.clone(),
+            hub_name: profile.hub_name.clone(),
             account_name: profile.account_name.clone(),
             timeout: profile.timeout.to_string(),
             auth_method_type,
@@ -76,6 +85,9 @@ impl ProfileModalState {
             password,
             certificate_path,
             editing: true,
+            available_hubs: Vec::new(),
+            fetching_hubs: false,
+            hub_fetch_error: None,
         }
     }
 
@@ -127,6 +139,7 @@ impl ProfileModalState {
 
         // Override defaults with our values
         profile.account_name = self.account_name.clone();
+        profile.hub_name = self.hub_name.trim().to_string();
         profile.timeout = timeout;
 
         // Add certificate path if provided
@@ -143,7 +156,10 @@ impl ProfileModalState {
     }
 
     pub fn is_valid(&self) -> bool {
-        let basic_valid = !self.name.is_empty() && !self.host.is_empty() && !self.port.is_empty();
+        let basic_valid = !self.name.is_empty()
+            && !self.host.is_empty()
+            && !self.port.is_empty()
+            && !self.hub_name.is_empty();
 
         if !basic_valid {
             return false;
@@ -181,6 +197,71 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
         .on_input(|value| Message::ProfileModalUpdatePort(value))
         .padding(8);
 
+    let hub_input = text_input("Virtual Hub Name", &state.hub_name)
+        .on_input(|value| Message::ProfileModalUpdateHubName(value))
+        .padding(8);
+
+    let fetch_button_label = if state.fetching_hubs {
+        "Fetching..."
+    } else {
+        "Fetch Hubs"
+    };
+
+    let mut fetch_button = button(text(fetch_button_label))
+        .style(|theme: &iced::Theme, status: iced::widget::button::Status| {
+            let palette = theme.palette();
+            iced::widget::button::Style {
+                background: Some(iced::Background::Color(
+                    if status == iced::widget::button::Status::Hovered {
+                        palette.primary.scale_alpha(0.8)
+                    } else {
+                        palette.primary
+                    }
+                )),
+                text_color: palette.text,
+                border: iced::Border::default().rounded(4.0),
+                ..Default::default()
+            }
+        });
+
+    if !state.fetching_hubs && !state.host.is_empty() && !state.port.is_empty() {
+        fetch_button = fetch_button.on_press(Message::ProfileModalFetchHubs);
+    }
+
+    let hub_picker = if state.available_hubs.is_empty() {
+        None
+    } else {
+        Some(
+            pick_list(
+                state.available_hubs.clone(),
+                if state.hub_name.is_empty() {
+                    None
+                } else {
+                    Some(state.hub_name.clone())
+                },
+                |selection| Message::ProfileModalHubSelected(selection),
+            )
+            .placeholder("Select Virtual Hub...")
+        )
+    };
+
+    let mut hub_controls = column![
+        row![hub_input, fetch_button].spacing(8)
+    ]
+    .spacing(8);
+
+    if let Some(picker) = hub_picker {
+        hub_controls = hub_controls.push(picker);
+    }
+
+    if let Some(error) = &state.hub_fetch_error {
+        hub_controls = hub_controls.push(
+            text(error).size(12).style(|theme: &iced::Theme| iced::widget::text::Style {
+                color: Some(theme.palette().danger),
+            })
+        );
+    }
+
     let protocol_options = vec![
         VpnProtocol::SslVpn,
         VpnProtocol::L2tpIpsec,
@@ -195,7 +276,7 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
     )
     .placeholder("Select Protocol");
 
-    let account_input = text_input("Account Name (Hub/Username)", &state.account_name)
+    let account_input = text_input("Account Name (Profile Alias)", &state.account_name)
         .on_input(|value| Message::ProfileModalUpdateAccount(value))
         .padding(8);
 
@@ -281,6 +362,7 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
         row![text("Profile Name").size(14), name_input].spacing(8).align_y(iced::Alignment::Center),
         row![text("Server Host").size(14), host_input].spacing(8).align_y(iced::Alignment::Center),
         row![text("Port").size(14), port_input].spacing(8).align_y(iced::Alignment::Center),
+        row![text("Virtual Hub").size(14), hub_controls].spacing(8).align_y(iced::Alignment::Start),
         row![text("Protocol").size(14), protocol_picker].spacing(8).align_y(iced::Alignment::Center),
         row![text("Auth Method").size(14), auth_picker].spacing(8).align_y(iced::Alignment::Center),
         row![text("Username").size(14), username_input].spacing(8).align_y(iced::Alignment::Center),

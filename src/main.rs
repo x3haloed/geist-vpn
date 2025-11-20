@@ -34,12 +34,16 @@ pub enum Message {
     ProfileModalUpdateHost(String),
     ProfileModalUpdatePort(String),
     ProfileModalUpdateProtocol(geist_vpn::profile::VpnProtocol),
+    ProfileModalUpdateHubName(String),
     ProfileModalUpdateAccount(String),
     ProfileModalUpdateTimeout(String),
     ProfileModalUpdateAuthMethodType(crate::ui::modal::AuthMethodType),
     ProfileModalUpdateUsername(String),
     ProfileModalUpdatePassword(String),
     ProfileModalUpdateCertificatePath(String),
+    ProfileModalFetchHubs,
+    ProfileModalHubListFetched(Result<Vec<String>, String>),
+    ProfileModalHubSelected(String),
     ProfileModalSave,
 
     // UI state messages
@@ -336,11 +340,20 @@ impl GeistApp {
 
             Message::ProfileModalUpdateHost(host) => {
                 self.profile_modal_state.host = host;
+                self.profile_modal_state.available_hubs.clear();
+                self.profile_modal_state.hub_fetch_error = None;
                 iced::Task::none()
             }
 
             Message::ProfileModalUpdatePort(port) => {
                 self.profile_modal_state.port = port;
+                self.profile_modal_state.available_hubs.clear();
+                self.profile_modal_state.hub_fetch_error = None;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalUpdateHubName(hub) => {
+                self.profile_modal_state.hub_name = hub;
                 iced::Task::none()
             }
 
@@ -376,6 +389,65 @@ impl GeistApp {
 
             Message::ProfileModalUpdateCertificatePath(certificate_path) => {
                 self.profile_modal_state.certificate_path = certificate_path;
+                iced::Task::none()
+            }
+
+            Message::ProfileModalFetchHubs => {
+                if self.profile_modal_state.fetching_hubs {
+                    return iced::Task::none();
+                }
+
+                if self.profile_modal_state.host.trim().is_empty() {
+                    self.profile_modal_state.hub_fetch_error = Some("Server host is required before fetching Virtual Hubs".into());
+                    return iced::Task::none();
+                }
+
+                let port_parse = self.profile_modal_state.port.parse::<u16>();
+                let port = match port_parse {
+                    Ok(p) if p > 0 => p,
+                    _ => {
+                        self.profile_modal_state.hub_fetch_error = Some("Enter a valid server port before fetching Virtual Hubs".into());
+                        return iced::Task::none();
+                    }
+                };
+
+                let host = self.profile_modal_state.host.clone();
+                self.profile_modal_state.fetching_hubs = true;
+                self.profile_modal_state.hub_fetch_error = None;
+
+                iced::Task::perform(
+                    async move {
+                        geist_vpn::hub::enumerate_virtual_hubs(&host, port)
+                            .map_err(|e| e.to_string())
+                    },
+                    |result| Message::ProfileModalHubListFetched(result),
+                )
+            }
+
+            Message::ProfileModalHubListFetched(result) => {
+                self.profile_modal_state.fetching_hubs = false;
+                match result {
+                    Ok(hubs) => {
+                        self.profile_modal_state.available_hubs = hubs;
+                        if self.profile_modal_state.available_hubs.is_empty() {
+                            self.profile_modal_state.hub_fetch_error = Some("Server returned no Virtual Hubs.".into());
+                        } else {
+                            if self.profile_modal_state.hub_name.is_empty() {
+                                self.profile_modal_state.hub_name = self.profile_modal_state.available_hubs[0].clone();
+                            }
+                            self.profile_modal_state.hub_fetch_error = None;
+                        }
+                    }
+                    Err(error) => {
+                        self.profile_modal_state.hub_fetch_error = Some(error);
+                        self.profile_modal_state.available_hubs.clear();
+                    }
+                }
+                iced::Task::none()
+            }
+
+            Message::ProfileModalHubSelected(hub) => {
+                self.profile_modal_state.hub_name = hub;
                 iced::Task::none()
             }
 

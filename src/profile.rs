@@ -37,6 +37,10 @@ pub struct VpnProfile {
     /// Account name (used for connection identification)
     pub account_name: String,
 
+    /// Target virtual hub on the server
+    #[serde(default)]
+    pub hub_name: String,
+
     /// Connection timeout in seconds
     pub timeout: u32,
 
@@ -371,6 +375,7 @@ impl VpnProfile {
                 password: String::new(),
             },
             account_name: String::new(),
+            hub_name: String::new(),
             timeout: 30,
             options: HashMap::new(),
             metadata: ProfileMetadata::default(),
@@ -422,6 +427,10 @@ impl VpnProfile {
 
         if self.port == 0 {
             return Err(Error::ProfileError { message: "Invalid port number".into() });
+        }
+
+        if self.hub_name.trim().is_empty() {
+            return Err(Error::ProfileError { message: "Virtual Hub name cannot be empty".into() });
         }
 
         match &self.auth {

@@ -16,6 +16,7 @@ pub mod profile;
 pub mod error;
 pub mod bindings;
 pub mod memory;
+pub mod hub;
 
 pub use client::SoftEtherClient;
 pub use profile::{VpnProfile, ProfileManager};
