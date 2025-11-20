@@ -26,7 +26,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         profile::VpnProtocol::SslVpn,
     );
 
-    println!("Profile created: {} -> {}:{}", profile.name, profile.host, profile.port);
+    println!(
+        "Profile created: {} -> {}:{}",
+        profile.name, profile.host, profile.port
+    );
 
     // Validate the profile
     println!("✅ Validating profile...");
@@ -36,7 +39,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Test profile serialization
     println!("💾 Testing profile serialization...");
     let yaml = serde_yaml::to_string(&profile)?;
-    println!("Profile YAML (first 200 chars): {}", &yaml[..yaml.len().min(200)]);
+    println!(
+        "Profile YAML (first 200 chars): {}",
+        &yaml[..yaml.len().min(200)]
+    );
 
     // Create a SoftEther client
     println!("🔧 Creating SoftEther client...");
@@ -58,7 +64,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let wide_string = memory::strings::rust_to_softether_wide(test_string)?;
     let back_to_rust = memory::strings::softether_wide_to_rust(&wide_string);
     assert_eq!(test_string, back_to_rust);
-    println!("String conversion successful: '{}' ↔ wide string", test_string);
+    println!(
+        "String conversion successful: '{}' ↔ wide string",
+        test_string
+    );
 
     // Test profile manager
     println!("📁 Testing profile manager...");

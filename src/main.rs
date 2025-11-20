@@ -1,14 +1,15 @@
-use iced::widget::{button, column, container, row, scrollable, text, stack, Column};
+use iced::widget::{button, column, container, row, scrollable, stack, text, Column};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use iced::{Color, Theme};
-use tracing_subscriber;
-
+use iced_futures::subscription::from_recipe;
 mod ui;
 mod vpn_manager;
 
+use geist_vpn::cert_prompt;
+use geist_vpn::cert_prompt as certificate_prompt;
 use geist_vpn::profile::{ProfileManager, VpnProfile};
+use geist_vpn::{cleanup, init};
 use std::sync::Arc;
-use geist_vpn::{init, cleanup};
 use vpn_manager::VpnManager;
 
 #[derive(Debug, Clone)]
@@ -53,6 +54,8 @@ pub enum Message {
 
     // Status updates
     StatusUpdated(ConnectionStatus),
+    CertificatePromptReceived(cert_prompt::CertificatePrompt),
+    CertificatePromptDecision(cert_prompt::CertificateDecision),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +100,9 @@ pub struct GeistApp {
     // Modal state
     show_profile_modal: bool,
     profile_modal_state: ui::modal::ProfileModalState,
+
+    certificate_prompt_receiver: Option<Arc<flume::Receiver<cert_prompt::CertificatePrompt>>>,
+    pending_certificate_prompt: Option<cert_prompt::CertificatePrompt>,
 }
 
 impl Default for GeistApp {
@@ -112,6 +118,8 @@ impl Default for GeistApp {
             connecting: false,
             show_profile_modal: false,
             profile_modal_state: ui::modal::ProfileModalState::default(),
+            certificate_prompt_receiver: None,
+            pending_certificate_prompt: None,
         }
     }
 }
@@ -120,6 +128,12 @@ impl GeistApp {
     fn new() -> (Self, Task<Message>) {
         tracing::info!("GeistApp: Starting app initialization");
         let mut app = Self::default();
+
+        let (certificate_prompt_sender, certificate_prompt_receiver) = flume::bounded(8);
+        if cert_prompt::register_sender(certificate_prompt_sender).is_err() {
+            tracing::warn!("Failed to register certificate prompt sender");
+        }
+        app.certificate_prompt_receiver = Some(Arc::new(certificate_prompt_receiver));
 
         tracing::info!("GeistApp: Initializing profile manager");
         // Initialize profile manager
@@ -147,7 +161,10 @@ impl GeistApp {
 
         tracing::info!("GeistApp: App initialization complete");
 
-        (app, iced::Task::perform(async { Message::LoadProfiles }, |_| Message::LoadProfiles))
+        (
+            app,
+            iced::Task::perform(async { Message::LoadProfiles }, |_| Message::LoadProfiles),
+        )
     }
 
     fn update(&mut self, message: Message) -> iced::Task<Message> {
@@ -160,13 +177,19 @@ impl GeistApp {
                     Some(profile) => profile.clone(),
                     None => {
                         self.connecting = false;
-                        return iced::Task::perform(async { Message::ConnectionResult(Err("Profile not found".to_string())) }, |msg| msg);
+                        return iced::Task::perform(
+                            async {
+                                Message::ConnectionResult(Err("Profile not found".to_string()))
+                            },
+                            |msg| msg,
+                        );
                     }
                 };
 
                 // Use VPN manager for connection (runs in separate thread, non-blocking)
                 let result = if let Some(vpn_manager) = &self.vpn_manager {
-                    vpn_manager.connect(profile)
+                    vpn_manager
+                        .connect(profile)
                         .map_err(|e| format!("Connection failed: {}", e))
                 } else {
                     Err("VPN manager not initialized".to_string())
@@ -180,7 +203,8 @@ impl GeistApp {
 
                 // Use VPN manager for disconnection (runs in separate thread, non-blocking)
                 let result = if let Some(vpn_manager) = &self.vpn_manager {
-                    vpn_manager.disconnect()
+                    vpn_manager
+                        .disconnect()
                         .map_err(|e| format!("Disconnection failed: {}", e))
                 } else {
                     Err("VPN manager not initialized".to_string())
@@ -314,7 +338,7 @@ impl GeistApp {
                 match result {
                     Ok(_) => {
                         self.show_profile_modal = false;
-// No editing_profile field anymore
+                        // No editing_profile field anymore
                     }
                     Err(error) => {
                         tracing::error!("Failed to save profile: {}", error);
@@ -398,7 +422,8 @@ impl GeistApp {
                 }
 
                 if self.profile_modal_state.host.trim().is_empty() {
-                    self.profile_modal_state.hub_fetch_error = Some("Server host is required before fetching Virtual Hubs".into());
+                    self.profile_modal_state.hub_fetch_error =
+                        Some("Server host is required before fetching Virtual Hubs".into());
                     return iced::Task::none();
                 }
 
@@ -406,7 +431,8 @@ impl GeistApp {
                 let port = match port_parse {
                     Ok(p) if p > 0 => p,
                     _ => {
-                        self.profile_modal_state.hub_fetch_error = Some("Enter a valid server port before fetching Virtual Hubs".into());
+                        self.profile_modal_state.hub_fetch_error =
+                            Some("Enter a valid server port before fetching Virtual Hubs".into());
                         return iced::Task::none();
                     }
                 };
@@ -430,10 +456,12 @@ impl GeistApp {
                     Ok(hubs) => {
                         self.profile_modal_state.available_hubs = hubs;
                         if self.profile_modal_state.available_hubs.is_empty() {
-                            self.profile_modal_state.hub_fetch_error = Some("Server returned no Virtual Hubs.".into());
+                            self.profile_modal_state.hub_fetch_error =
+                                Some("Server returned no Virtual Hubs.".into());
                         } else {
                             if self.profile_modal_state.hub_name.is_empty() {
-                                self.profile_modal_state.hub_name = self.profile_modal_state.available_hubs[0].clone();
+                                self.profile_modal_state.hub_name =
+                                    self.profile_modal_state.available_hubs[0].clone();
                             }
                             self.profile_modal_state.hub_fetch_error = None;
                         }
@@ -453,18 +481,22 @@ impl GeistApp {
 
             Message::ProfileModalSave => {
                 if self.profile_modal_state.is_valid() {
-                    match self.profile_modal_state.to_profile(
-                        if self.profile_modal_state.editing {
+                    match self
+                        .profile_modal_state
+                        .to_profile(if self.profile_modal_state.editing {
                             // Find existing profile ID
-                            self.profiles.iter()
+                            self.profiles
+                                .iter()
                                 .find(|p| p.name == self.profile_modal_state.name)
                                 .map(|p| p.id.clone())
                         } else {
                             None
-                        }
-                    ) {
+                        }) {
                         Ok(profile) => {
-                            return iced::Task::perform(async move { Message::SaveProfile(profile) }, |msg| msg);
+                            return iced::Task::perform(
+                                async move { Message::SaveProfile(profile) },
+                                |msg| msg,
+                            );
                         }
                         Err(error) => {
                             tracing::error!("Failed to create profile: {}", error);
@@ -484,6 +516,51 @@ impl GeistApp {
                 self.connection_status = status;
                 iced::Task::none()
             }
+            Message::CertificatePromptReceived(prompt) => {
+                self.pending_certificate_prompt = Some(prompt);
+                iced::Task::none()
+            }
+            Message::CertificatePromptDecision(decision) => {
+                if let Some(prompt) = self.pending_certificate_prompt.take() {
+                    let _ = prompt.response_tx.send(decision);
+                    if decision == cert_prompt::CertificateDecision::TrustPermanently {
+                        if let Some(profile_id) = prompt.profile_id.as_deref() {
+                            if let Some(manager) = &self.profile_manager {
+                                match manager.get_profile(profile_id) {
+                                    Ok(mut profile) => {
+                                        profile
+                                            .options
+                                            .insert("server_cert".to_string(), prompt.pem.clone());
+
+                                        if let Err(err) = manager.save_profile(&profile) {
+                                            tracing::error!(
+                                                "Failed to save trusted certificate: {}",
+                                                err
+                                            );
+                                        }
+
+                                        if let Some(local_profile) =
+                                            self.profiles.iter_mut().find(|p| p.id == profile_id)
+                                        {
+                                            local_profile.options.insert(
+                                                "server_cert".to_string(),
+                                                prompt.pem.clone(),
+                                            );
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::error!(
+                                            "Failed to load profile for certificate trust: {}",
+                                            err
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                iced::Task::none()
+            }
         }
     }
 
@@ -497,11 +574,7 @@ impl GeistApp {
                 &self.connection_status
             ),
             ui::quick_access::view(&self.current_view),
-            ui::profiles::view(
-                &self.profiles,
-                &self.current_view,
-                self.loading_profiles
-            ),
+            ui::profiles::view(&self.profiles, &self.current_view, self.loading_profiles),
         ]
         .spacing(20)
         .padding(20);
@@ -509,15 +582,13 @@ impl GeistApp {
         let container = container(content)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|theme: &Theme| {
-                iced::widget::container::Style {
-                    background: Some(theme.palette().background.into()),
-                    ..Default::default()
-                }
+            .style(|theme: &Theme| iced::widget::container::Style {
+                background: Some(theme.palette().background.into()),
+                ..Default::default()
             });
 
         // Add modal if needed
-        if self.show_profile_modal {
+        let base_view = if self.show_profile_modal {
             let modal = ui::modal::view(&self.profile_modal_state);
 
             // Overlay the modal on top of the main content
@@ -535,10 +606,78 @@ impl GeistApp {
                             ..Default::default()
                         })
                 )
-            ].into()
+            ]
         } else {
-            container.into()
+            iced::widget::stack![container]
+        };
+
+        if let Some(prompt) = &self.pending_certificate_prompt {
+            let header = iced::widget::text("Untrusted Server Certificate").size(22);
+            let server_info =
+                iced::widget::text(format!("Server: {}:{}", prompt.host, prompt.port)).size(16);
+            let subject_info = iced::widget::text(format!("Subject: {}", prompt.subject)).size(14);
+            let issuer_info = iced::widget::text(format!("Issuer: {}", prompt.issuer)).size(14);
+            let fingerprint_info =
+                iced::widget::text(format!("Fingerprint (SHA1): {}", prompt.fingerprint)).size(12);
+
+            let trust_temp_button =
+                button(text("Trust Temporarily")).on_press(Message::CertificatePromptDecision(
+                    cert_prompt::CertificateDecision::TrustTemporarily,
+                ));
+            let trust_perm_button =
+                button(text("Trust Permanently")).on_press(Message::CertificatePromptDecision(
+                    cert_prompt::CertificateDecision::TrustPermanently,
+                ));
+            let cancel_button = button(text("Cancel")).on_press(
+                Message::CertificatePromptDecision(cert_prompt::CertificateDecision::Reject),
+            );
+
+            let button_row = row![trust_temp_button, trust_perm_button, cancel_button]
+                .spacing(8)
+                .align_y(iced::Alignment::Center);
+
+            let modal_content = column![
+                header,
+                server_info,
+                subject_info,
+                issuer_info,
+                fingerprint_info,
+                button_row
+            ]
+            .spacing(12)
+            .padding(24)
+            .max_width(480.0);
+
+            let prompt_modal = iced::widget::container(modal_content)
+                .width(Length::Fill)
+                .height(Length::Shrink)
+                .style(|theme: &Theme| iced::widget::container::Style {
+                    background: Some(theme.palette().background.into()),
+                    border: iced::Border {
+                        color: theme.palette().primary,
+                        width: 2.0,
+                        radius: 12.0.into(),
+                    },
+                    ..Default::default()
+                });
+
+            return iced::widget::stack![
+                base_view,
+                iced::widget::opaque(
+                    iced::widget::container(prompt_modal)
+                        .center_x(Length::Fill)
+                        .center_y(Length::Fill)
+                        .padding(20)
+                        .style(|theme: &Theme| iced::widget::container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                            ..Default::default()
+                        })
+                )
+            ]
+            .into();
         }
+
+        base_view.into()
     }
 
     fn theme(&self) -> Theme {
@@ -546,13 +685,20 @@ impl GeistApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // Poll VPN status every 2 seconds for real-time updates
-        if self.vpn_manager.is_some() {
-            iced::time::every(std::time::Duration::from_secs(2))
-                .map(|_| Message::PollStatus)
+        let status_sub = if self.vpn_manager.is_some() {
+            iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::PollStatus)
         } else {
             Subscription::none()
-        }
+        };
+
+        let cert_sub = if let Some(receiver) = &self.certificate_prompt_receiver {
+            from_recipe(certificate_prompt::subscription(receiver.clone()))
+                .map(Message::CertificatePromptReceived)
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch(vec![status_sub, cert_sub])
     }
 }
 

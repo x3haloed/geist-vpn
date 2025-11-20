@@ -127,16 +127,10 @@ impl std::fmt::Display for VpnProtocol {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AuthMethod {
     /// Username and password
-    Password {
-        username: String,
-        password: String,
-    },
+    Password { username: String, password: String },
 
     /// Client certificate
-    Certificate {
-        cert_path: String,
-        key_path: String,
-    },
+    Certificate { cert_path: String, key_path: String },
 
     /// RADIUS authentication
     Radius,
@@ -178,14 +172,16 @@ impl ProfileManager {
             for profile in profiles {
                 cache.insert(profile.id.clone(), profile);
             }
-            self.cache_loaded.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.cache_loaded
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(())
     }
 
     /// Invalidate the cache (force reload on next access)
     pub fn invalidate_cache(&self) {
-        self.cache_loaded.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.cache_loaded
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Get the profiles directory path
@@ -257,11 +253,12 @@ impl ProfileManager {
     pub fn get_profile(&self, profile_id: &str) -> Result<VpnProfile> {
         self.ensure_cache_loaded()?;
         let cache = self.cache.read().unwrap();
-        cache.get(profile_id).cloned().ok_or_else(|| {
-            Error::ProfileError {
+        cache
+            .get(profile_id)
+            .cloned()
+            .ok_or_else(|| Error::ProfileError {
                 message: format!("Profile '{}' not found", profile_id),
-            }
-        })
+            })
     }
 
     /// Get a specific profile by ID directly from disk (bypasses cache)
@@ -284,10 +281,14 @@ impl ProfileManager {
         let results: Vec<VpnProfile> = cache
             .values()
             .filter(|profile| {
-                profile.name.to_lowercase().contains(&query_lower) ||
-                profile.description.to_lowercase().contains(&query_lower) ||
-                profile.host.to_lowercase().contains(&query_lower) ||
-                profile.metadata.tags.iter().any(|tag| tag.to_lowercase().contains(&query_lower))
+                profile.name.to_lowercase().contains(&query_lower)
+                    || profile.description.to_lowercase().contains(&query_lower)
+                    || profile.host.to_lowercase().contains(&query_lower)
+                    || profile
+                        .metadata
+                        .tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains(&query_lower))
             })
             .cloned()
             .collect();
@@ -321,7 +322,10 @@ impl ProfileManager {
             .collect();
 
         recent.sort_by(|a, b| {
-            b.metadata.last_used_at.unwrap().cmp(&a.metadata.last_used_at.unwrap())
+            b.metadata
+                .last_used_at
+                .unwrap()
+                .cmp(&a.metadata.last_used_at.unwrap())
         });
 
         recent.truncate(limit);
@@ -361,7 +365,12 @@ impl ProfileManager {
 impl VpnProfile {
     /// Create a new VPN profile
     pub fn new(name: String, host: String, port: u16, protocol: VpnProtocol) -> Self {
-        let id = format!("{}_{}_{}", name.to_lowercase().replace(" ", "_"), host, port);
+        let id = format!(
+            "{}_{}_{}",
+            name.to_lowercase().replace(" ", "_"),
+            host,
+            port
+        );
 
         Self {
             id,
@@ -418,36 +427,55 @@ impl VpnProfile {
     /// Validate the profile configuration
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
-            return Err(Error::ProfileError { message: "Profile name cannot be empty".into() });
+            return Err(Error::ProfileError {
+                message: "Profile name cannot be empty".into(),
+            });
         }
 
         if self.host.is_empty() {
-            return Err(Error::ProfileError { message: "Host cannot be empty".into() });
+            return Err(Error::ProfileError {
+                message: "Host cannot be empty".into(),
+            });
         }
 
         if self.port == 0 {
-            return Err(Error::ProfileError { message: "Invalid port number".into() });
+            return Err(Error::ProfileError {
+                message: "Invalid port number".into(),
+            });
         }
 
         if self.hub_name.trim().is_empty() {
-            return Err(Error::ProfileError { message: "Virtual Hub name cannot be empty".into() });
+            return Err(Error::ProfileError {
+                message: "Virtual Hub name cannot be empty".into(),
+            });
         }
 
         match &self.auth {
             AuthMethod::Password { username, password } => {
                 if username.is_empty() {
-                    return Err(Error::ProfileError { message: "Username cannot be empty".into() });
+                    return Err(Error::ProfileError {
+                        message: "Username cannot be empty".into(),
+                    });
                 }
                 if password.is_empty() {
-                    return Err(Error::ProfileError { message: "Password cannot be empty".into() });
+                    return Err(Error::ProfileError {
+                        message: "Password cannot be empty".into(),
+                    });
                 }
             }
-            AuthMethod::Certificate { cert_path, key_path } => {
+            AuthMethod::Certificate {
+                cert_path,
+                key_path,
+            } => {
                 if !Path::new(cert_path).exists() {
-                    return Err(Error::ProfileError { message: format!("Certificate file not found: {}", cert_path) });
+                    return Err(Error::ProfileError {
+                        message: format!("Certificate file not found: {}", cert_path),
+                    });
                 }
                 if !Path::new(key_path).exists() {
-                    return Err(Error::ProfileError { message: format!("Key file not found: {}", key_path) });
+                    return Err(Error::ProfileError {
+                        message: format!("Key file not found: {}", key_path),
+                    });
                 }
             }
             _ => {} // Other auth methods may not need validation here
@@ -641,19 +669,22 @@ mod tests {
         profiles.push(profile3);
 
         // Test search by name
-        let work_results: Vec<_> = profiles.iter()
+        let work_results: Vec<_> = profiles
+            .iter()
             .filter(|p| p.name.to_lowercase().contains("work"))
             .collect();
         assert_eq!(work_results.len(), 1);
 
         // Test search by tag
-        let production_results: Vec<_> = profiles.iter()
+        let production_results: Vec<_> = profiles
+            .iter()
             .filter(|p| p.metadata.tags.contains(&"production".to_string()))
             .collect();
         assert_eq!(production_results.len(), 1);
 
         // Test search by description
-        let backup_results: Vec<_> = profiles.iter()
+        let backup_results: Vec<_> = profiles
+            .iter()
             .filter(|p| p.description.to_lowercase().contains("backup"))
             .collect();
         assert_eq!(backup_results.len(), 1);
@@ -703,12 +734,16 @@ mod tests {
         profiles.push(profile3);
 
         // Filter and sort by last used
-        let mut recent: Vec<_> = profiles.into_iter()
+        let mut recent: Vec<_> = profiles
+            .into_iter()
             .filter(|p| p.metadata.last_used_at.is_some())
             .collect();
 
         recent.sort_by(|a, b| {
-            b.metadata.last_used_at.unwrap().cmp(&a.metadata.last_used_at.unwrap())
+            b.metadata
+                .last_used_at
+                .unwrap()
+                .cmp(&a.metadata.last_used_at.unwrap())
         });
 
         // Test results

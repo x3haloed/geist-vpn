@@ -11,16 +11,17 @@
 //! - Connection status monitoring
 //! - Cross-platform support (macOS, Windows, Linux)
 
-pub mod client;
-pub mod profile;
-pub mod error;
 pub mod bindings;
-pub mod memory;
+pub mod cert_prompt;
+pub mod client;
+pub mod error;
 pub mod hub;
+pub mod memory;
+pub mod profile;
 
 pub use client::SoftEtherClient;
-pub use profile::{VpnProfile, ProfileManager};
-pub use error::{Result, Error};
+pub use error::{Error, Result};
+pub use profile::{ProfileManager, VpnProfile};
 
 // Re-export commonly used types
 pub use bindings::*;

@@ -3,7 +3,7 @@
 //! SoftEtherVPN uses custom memory allocators (Malloc, Free, ZeroMalloc) that need to be
 //! properly integrated with Rust's ownership system and safety guarantees.
 
-use crate::bindings::{softether_malloc, softether_zero_malloc, softether_free, UINT};
+use crate::bindings::{softether_free, softether_malloc, softether_zero_malloc, UINT};
 use crate::error::{Error, Result};
 use std::alloc::{GlobalAlloc, Layout};
 use std::ptr::NonNull;
@@ -15,10 +15,9 @@ pub fn malloc_box<T>(value: T) -> Result<Box<T>> {
     #[cfg(not(test))]
     {
         let size = std::mem::size_of::<T>() as UINT;
-        let ptr = softether_malloc(size)
-            .ok_or_else(|| Error::FfiError {
-                message: "SoftEther malloc failed".into(),
-            })?;
+        let ptr = softether_malloc(size).ok_or_else(|| Error::FfiError {
+            message: "SoftEther malloc failed".into(),
+        })?;
 
         unsafe {
             let typed_ptr = ptr.as_ptr() as *mut T;
@@ -36,28 +35,25 @@ pub fn malloc_box<T>(value: T) -> Result<Box<T>> {
 /// Safe wrapper around SoftEther's ZeroMalloc function
 ///
 /// Returns a Box containing a zero-initialized value.
-pub fn zero_malloc_box<T>() -> Result<Box<T>>
-where
-    T: Default,
-{
+pub fn zero_malloc_box<T>() -> Result<Box<T>> {
     #[cfg(not(test))]
     {
-        let size = std::mem::size_of::<T>() as UINT;
-        let ptr = softether_zero_malloc(size)
-            .ok_or_else(|| Error::FfiError {
-                message: "SoftEther zero malloc failed".into(),
-            })?;
+        let byte_count = std::mem::size_of::<T>();
+        let size = byte_count as UINT;
+        let ptr = softether_zero_malloc(size).ok_or_else(|| Error::FfiError {
+            message: "SoftEther zero malloc failed".into(),
+        })?;
 
         unsafe {
             let typed_ptr = ptr.as_ptr() as *mut T;
-            std::ptr::write(typed_ptr, T::default());
+            std::ptr::write_bytes(typed_ptr as *mut u8, 0, byte_count);
             Ok(Box::from_raw(typed_ptr))
         }
     }
     #[cfg(test)]
     {
-        // During tests, use Rust's standard allocator
-        Ok(Box::new(T::default()))
+        // During tests, use Rust's standard allocator with zeroed memory
+        unsafe { Ok(Box::new(std::mem::zeroed())) }
     }
 }
 
@@ -67,10 +63,9 @@ where
 pub fn malloc_raw(size: usize) -> Result<RawMemory> {
     #[cfg(not(test))]
     {
-        let ptr = softether_malloc(size as UINT)
-            .ok_or_else(|| Error::FfiError {
-                message: "SoftEther malloc failed".into(),
-            })?;
+        let ptr = softether_malloc(size as UINT).ok_or_else(|| Error::FfiError {
+            message: "SoftEther malloc failed".into(),
+        })?;
 
         Ok(RawMemory {
             ptr,
@@ -102,10 +97,9 @@ pub fn malloc_raw(size: usize) -> Result<RawMemory> {
 pub fn zero_malloc_raw(size: usize) -> Result<RawMemory> {
     #[cfg(not(test))]
     {
-        let ptr = softether_zero_malloc(size as UINT)
-            .ok_or_else(|| Error::FfiError {
-                message: "SoftEther zero malloc failed".into(),
-            })?;
+        let ptr = softether_zero_malloc(size as UINT).ok_or_else(|| Error::FfiError {
+            message: "SoftEther zero malloc failed".into(),
+        })?;
 
         Ok(RawMemory {
             ptr,
@@ -167,7 +161,8 @@ impl Drop for RawMemory {
         } else {
             #[cfg(test)]
             unsafe {
-                let layout = Layout::from_size_align(self.size, std::mem::align_of::<u8>()).unwrap();
+                let layout =
+                    Layout::from_size_align(self.size, std::mem::align_of::<u8>()).unwrap();
                 std::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
             }
         }
@@ -208,7 +203,10 @@ pub mod strings {
 
     /// Convert a SoftEther wide string back to Rust string
     pub fn softether_wide_to_rust(wide_str: &[u16]) -> String {
-        let end = wide_str.iter().position(|&c| c == 0).unwrap_or(wide_str.len());
+        let end = wide_str
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(wide_str.len());
         String::from_utf16_lossy(&wide_str[..end])
     }
 }

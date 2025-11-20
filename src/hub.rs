@@ -5,7 +5,7 @@
 
 use crate::bindings;
 use crate::bindings::{
-    CLIENT_OPTION, TOKEN_LIST, CEDAR, SESSION, MAX_HOST_NAME_LEN, PROXY_DIRECT, UINT,
+    CEDAR, CLIENT_OPTION, MAX_HOST_NAME_LEN, PROXY_DIRECT, SESSION, TOKEN_LIST, UINT,
 };
 use crate::error::{Error, Result};
 use std::ffi::{c_char, CStr};
@@ -111,10 +111,11 @@ impl Drop for SessionGuard {
 }
 
 fn prepare_client_option(option: &mut CLIENT_OPTION, host: &str, port: u16) -> Result<()> {
-    bindings::to_wide_string("geist-hub-enum", &mut option.AccountName)
-        .map_err(|e| Error::EncodingError {
+    bindings::to_wide_string("geist-hub-enum", &mut option.AccountName).map_err(|e| {
+        Error::EncodingError {
             message: format!("Failed to encode account name: {}", e),
-        })?;
+        }
+    })?;
 
     write_c_string(&mut option.Hostname, host, MAX_HOST_NAME_LEN)?;
     option.Port = port as bindings::UINT;

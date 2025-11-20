@@ -2,9 +2,25 @@
 //!
 //! Provides a safe Rust interface to SoftEtherVPN's client functionality.
 
+use crate::bindings::{
+    self, CLIENT_AUTH, CLIENT_OPTION, NAME, RPC_CERT, RPC_CLIENT_CREATE_ACCOUNT,
+    RPC_CLIENT_DELETE_ACCOUNT, SHA1_SIZE, X,
+};
+use crate::cert_prompt as certificate_prompt;
+use crate::cert_prompt::{ActiveProfileInfo, CertificateDecision};
 use crate::error::{Error, Result};
-use crate::profile::{VpnProfile, VpnProtocol, AuthMethod};
+use crate::memory::{self, strings};
+#[cfg(test)]
+use crate::profile::VpnProtocol;
+use crate::profile::{AuthMethod, VpnProfile};
+#[cfg(test)]
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::ffi::{c_char, c_void, CString};
+use std::ptr;
+use std::slice;
+use std::sync::mpsc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 
 /// SoftEther VPN Client wrapper
@@ -17,6 +33,9 @@ pub struct SoftEtherClient {
 
     /// Active profile if connected
     active_profile: Option<VpnProfile>,
+
+    /// Fingerprints of certificates already loaded into the trust store
+    trusted_certificates: HashSet<String>,
 
     /// Status update channel sender
     status_tx: broadcast::Sender<ConnectionStatus>,
@@ -51,7 +70,10 @@ impl SoftEtherClient {
                     message: "Failed to create SoftEther client".into(),
                 });
             }
-            tracing::info!("SoftEtherClient: CiNewClient() succeeded, handle: {:?}", handle);
+            tracing::info!(
+                "SoftEtherClient: CiNewClient() succeeded, handle: {:?}",
+                handle
+            );
 
             // Initialize keep connection (from CtStartClient)
             tracing::info!("SoftEtherClient: Calling CiInitKeep()");
@@ -73,6 +95,7 @@ impl SoftEtherClient {
                 client_handle: handle,
                 state: ConnectionState::Disconnected,
                 active_profile: None,
+                trusted_certificates: HashSet::new(),
                 status_tx,
             })
         }
@@ -174,7 +197,12 @@ impl SoftEtherClient {
                 if test_offset + 4 <= 64 {
                     let test_ptr = client_ptr.add(test_offset) as *const u32;
                     let test_value = unsafe { *test_ptr };
-                    tracing::error!("  Possible Err at offset {}: {} (0x{:08x})", test_offset, test_value, test_value);
+                    tracing::error!(
+                        "  Possible Err at offset {}: {} (0x{:08x})",
+                        test_offset,
+                        test_value,
+                        test_value
+                    );
                     // If it looks like a small error code (0-200), use it
                     if test_value > 0 && test_value < 200 {
                         err_value = test_value;
@@ -227,34 +255,17 @@ impl SoftEtherClient {
     /// Load a CA certificate from file and add it to the client's trusted certificates
     pub fn load_ca_certificate(&mut self, cert_path: &str) -> Result<()> {
         tracing::info!("Loading CA certificate from: {}", cert_path);
-
-        let cert_path_c = std::ffi::CString::new(cert_path)
-            .map_err(|e| Error::ConnectionFailed {
-                message: format!("Invalid certificate path: {}", e),
-            })?;
-
-        unsafe {
-            let cert = crate::bindings::FileToX(cert_path_c.as_ptr());
-            if cert.is_null() {
-                return Err(Error::ConnectionFailed {
-                    message: format!("Failed to load certificate from {}", cert_path),
-                });
-            }
-
-            // Note: CiLoadCACert expects a FOLDER structure, which is complex to create
-            // For now, we'll skip this step and rely on certificate validation being disabled
-            // in the connection process
-
-            crate::bindings::FreeX(cert);
-        }
-
-        tracing::info!("Certificate loaded successfully");
+        let fingerprint = self.load_certificate_from_file(cert_path)?;
+        tracing::info!(
+            "Loaded CA certificate from '{}' (fingerprint {})",
+            cert_path,
+            fingerprint
+        );
         Ok(())
     }
 
     /// Connect to a VPN server using the provided profile
     pub async fn connect(&mut self, profile: &VpnProfile) -> Result<()> {
-        // Check current state
         match self.state {
             ConnectionState::Connected => {
                 return Err(Error::ConnectionFailed {
@@ -271,91 +282,64 @@ impl SoftEtherClient {
                     message: "Cannot connect while disconnecting".into(),
                 });
             }
-            _ => {} // Disconnected or Error states are OK to proceed from
+            _ => {}
         }
 
-        // Validate profile before attempting connection
         profile.validate()?;
 
-        // Load CA certificate if specified
-        if let Some(cert_path) = profile.options.get("certificate_path") {
-            if !cert_path.is_empty() {
-                self.load_ca_certificate(cert_path)?;
-            }
-        }
+        let account_alias = if profile.account_name.trim().is_empty() {
+            profile.name.clone()
+        } else {
+            profile.account_name.clone()
+        };
 
-        // Transition to connecting state
+        self.load_profile_certificate(profile)?;
+
         self.state = ConnectionState::Connecting;
         self.send_status_update(ConnectionStatus::Connecting);
         tracing::info!("Starting VPN connection to: {}", profile.name);
 
-        // Create connection request structure
-        let connect_req = self.create_connect_request(profile)?;
-
-        // Attempt connection with timeout
-        let connect_future = async {
-            // Pre-connection validation
-            self.validate_connection_parameters(profile)?;
-
-            let result = unsafe {
-                crate::bindings::CtConnect(
-                    self.client_handle,
-                    connect_req.as_typed_ptr::<crate::bindings::RPC_CLIENT_CONNECT>(),
-                )
-            };
-
-            if result == 0 {
-                // Connection failed - get detailed SoftEther error information
-                let softether_error = self.get_softether_error_code();
-
-                tracing::error!("SoftEther CtConnect returned 0 (failure)");
-                tracing::error!("SoftEther Error Code: {} ({})", softether_error, self.get_error_description(softether_error));
-                tracing::error!("Connection parameters:");
-                tracing::error!("  Server: {}:{}", profile.host, profile.port);
-                tracing::error!("  Account: {}", profile.account_name);
-                tracing::error!("  Protocol: {:?}", profile.protocol);
-                tracing::error!("  Auth: {:?}", profile.auth);
-
-                // Try to get more diagnostic information
-                let diagnostic_info = self.get_connection_diagnostics(profile).await;
-                tracing::error!("Network diagnostics: {}", diagnostic_info);
-
-                // Connection failed - provide detailed error message
-                let error_msg = self.get_connection_error_details(profile).await;
-                let detailed_error_msg = format!(
-                    "SoftEther Error {} ({}). {}",
-                    softether_error,
-                    self.get_error_description(softether_error),
-                    error_msg
-                );
-                return Err(Error::ConnectionFailed {
-                    message: detailed_error_msg,
-                });
-            }
-
-            Ok(())
+        let profile_info = ActiveProfileInfo {
+            id: profile.id.clone(),
+            name: profile.name.clone(),
+            host: profile.host.clone(),
+            port: profile.port,
         };
 
-        // Add timeout (30 seconds default)
-        let timeout_duration = std::time::Duration::from_secs(profile.timeout as u64);
-        match tokio::time::timeout(timeout_duration, connect_future).await {
+        let result = {
+            let account_score = account_alias.clone();
+            let profile_clone = profile.clone();
+            let active_info = profile_info.clone();
+            let timeout_duration = Duration::from_secs(profile.timeout as u64);
+            tokio::time::timeout(timeout_duration, async {
+                certificate_prompt::clear_last_certificate_decision();
+                certificate_prompt::set_active_profile(Some(active_info));
+                let result = self
+                    .perform_connection_async(&profile_clone, &account_score)
+                    .await;
+                certificate_prompt::clear_active_profile();
+                result
+            })
+            .await
+        };
+
+        match result {
             Ok(Ok(())) => {
-                // Connection successful
                 self.state = ConnectionState::Connected;
-                self.active_profile = Some(profile.clone());
+                let mut active_profile = profile.clone();
+                active_profile.account_name = account_alias.clone();
+                self.active_profile = Some(active_profile);
                 self.send_status_update(ConnectionStatus::Connected);
                 tracing::info!("Successfully connected to VPN: {}", profile.name);
                 Ok(())
             }
             Ok(Err(e)) => {
-                // Connection failed
                 self.state = ConnectionState::Disconnected;
                 self.send_status_update(ConnectionStatus::Disconnected);
                 tracing::error!("VPN connection failed: {}", e);
                 Err(e)
             }
             Err(_) => {
-                // Timeout
                 self.state = ConnectionState::Disconnected;
                 self.send_status_update(ConnectionStatus::Disconnected);
                 let error = Error::ConnectionFailed {
@@ -365,6 +349,294 @@ impl SoftEtherClient {
                 Err(error)
             }
         }
+    }
+
+    async fn perform_connection_async(
+        &mut self,
+        profile: &VpnProfile,
+        account_name: &str,
+    ) -> Result<()> {
+        self.validate_connection_parameters(profile)?;
+
+        let account_ptr = self.build_account_request(profile, account_name)?;
+        let result = unsafe { bindings::CtCreateAccount(self.client_handle, account_ptr, false) };
+        unsafe {
+            bindings::CiFreeClientCreateAccount(account_ptr);
+        }
+
+        if !result {
+            let softether_error = self.get_softether_error_code();
+            let error_message = format!(
+                "SoftEther Error {} ({}) while creating account '{}'",
+                softether_error,
+                self.get_error_description(softether_error),
+                account_name
+            );
+            return Err(Error::ConnectionFailed {
+                message: error_message,
+            });
+        }
+
+        let account_name_wide = strings::rust_to_softether_wide(account_name)?;
+        let _account_guard = AccountGuard::new(self.client_handle, &account_name_wide)?;
+
+        let connect_req = self.create_connect_request(account_name)?;
+        let connect_result = unsafe {
+            bindings::CtConnect(
+                self.client_handle,
+                connect_req.as_typed_ptr::<bindings::RPC_CLIENT_CONNECT>(),
+            )
+        };
+
+        if connect_result == 0 {
+            let cert_decision = certificate_prompt::take_last_certificate_decision();
+            if cert_decision == Some(CertificateDecision::Reject) {
+                tracing::warn!("Connection aborted because user rejected the server certificate");
+                return Err(Error::ConnectionFailed {
+                    message: "Server certificate was rejected by the user".into(),
+                });
+            }
+
+            let softether_error = self.get_softether_error_code();
+            tracing::error!("SoftEther CtConnect returned 0 (failure)");
+            tracing::error!(
+                "SoftEther Error Code: {} ({})",
+                softether_error,
+                self.get_error_description(softether_error)
+            );
+            tracing::error!("Connection parameters:");
+            tracing::error!("  Server: {}:{}", profile.host, profile.port);
+            tracing::error!("  Account: {}", account_name);
+            tracing::error!("  Protocol: {:?}", profile.protocol);
+            tracing::error!("  Auth: {:?}", profile.auth);
+
+            let diagnostic_info = self.get_connection_diagnostics(profile).await;
+            tracing::error!("Network diagnostics: {}", diagnostic_info);
+
+            let error_msg = self.get_connection_error_details(profile).await;
+            let detailed_error_msg = format!(
+                "SoftEther Error {} ({}). {}",
+                softether_error,
+                self.get_error_description(softether_error),
+                error_msg
+            );
+
+            return Err(Error::ConnectionFailed {
+                message: detailed_error_msg,
+            });
+        }
+
+        certificate_prompt::clear_last_certificate_decision();
+        Ok(())
+    }
+
+    fn build_account_request(
+        &self,
+        profile: &VpnProfile,
+        account_name: &str,
+    ) -> Result<*mut RPC_CLIENT_CREATE_ACCOUNT> {
+        let option = self.build_client_option(profile, account_name)?;
+        let auth = self.build_client_auth(profile)?;
+
+        let mut request = memory::zero_malloc_box::<RPC_CLIENT_CREATE_ACCOUNT>()?;
+        request.ClientOption = Box::into_raw(option);
+        request.ClientAuth = Box::into_raw(auth);
+        request.StartupAccount = false;
+        request.CheckServerCert = true;
+        request.RetryOnServerCert = false;
+        request.AddDefaultCA = false;
+        request.ServerCert = ptr::null_mut();
+
+        Ok(Box::into_raw(request))
+    }
+
+    fn build_client_option(
+        &self,
+        profile: &VpnProfile,
+        account_name: &str,
+    ) -> Result<Box<CLIENT_OPTION>> {
+        let mut option = memory::zero_malloc_box::<CLIENT_OPTION>()?;
+        option.AccountName = strings::rust_to_softether_wide(account_name)?;
+        copy_to_c_buffer(&mut option.Hostname, &profile.host)?;
+        option.Port = profile.port as bindings::UINT;
+        option.PortUDP = 0;
+        option.ProxyType = bindings::PROXY_DIRECT;
+        option.ProxyPort = 0;
+        option.NumRetry = 1;
+        option.RetryInterval = 1;
+        copy_to_c_buffer(&mut option.HubName, &profile.hub_name)?;
+        option.MaxConnection = 1;
+        option.UseEncrypt = true;
+        option.UseCompress = true;
+        copy_to_c_buffer(&mut option.DeviceName, "GEISTVPN")?;
+        option.AdditionalConnectionInterval = 1;
+        option.ConnectionDisconnectSpan = 0;
+        option.HideStatusWindow = true;
+        option.HideNicInfoWindow = true;
+        option.NoRoutingTracking = true;
+        option.NoUdpAcceleration = false;
+        option.RequireMonitorMode = false;
+        option.RequireBridgeRoutingMode = false;
+        option.DisableQoS = false;
+        option.FromAdminPack = false;
+        option.BindLocalPort = 0;
+
+        Ok(option)
+    }
+
+    fn build_client_auth(&self, profile: &VpnProfile) -> Result<Box<CLIENT_AUTH>> {
+        let mut auth = memory::zero_malloc_box::<CLIENT_AUTH>()?;
+
+        match &profile.auth {
+            AuthMethod::Password { username, password } => {
+                auth.AuthType = bindings::CLIENT_AUTHTYPE_PASSWORD;
+                copy_to_c_buffer(&mut auth.Username, username)?;
+                copy_to_c_buffer(&mut auth.PlainPassword, password)?;
+            }
+            AuthMethod::NtDomain {
+                username,
+                password,
+                domain,
+            } => {
+                auth.AuthType = bindings::CLIENT_AUTHTYPE_PASSWORD;
+                let combined = if domain.trim().is_empty() {
+                    username.clone()
+                } else {
+                    format!(r"{}\{}", domain.trim(), username)
+                };
+                copy_to_c_buffer(&mut auth.Username, &combined)?;
+                copy_to_c_buffer(&mut auth.PlainPassword, password)?;
+            }
+            AuthMethod::Radius => {
+                auth.AuthType = bindings::CLIENT_AUTHTYPE_ANONYMOUS;
+            }
+            AuthMethod::Certificate { .. } => {
+                return Err(Error::ConnectionFailed {
+                    message: "Certificate authentication is not yet supported".into(),
+                });
+            }
+        }
+
+        auth.CheckCertProc = Some(certificate_check_callback);
+        auth.SecureSignProc = None;
+
+        Ok(auth)
+    }
+
+    fn load_profile_certificate(&mut self, profile: &VpnProfile) -> Result<()> {
+        if let Some(pem) = profile.options.get("server_cert") {
+            let trimmed = pem.trim();
+            if !trimmed.is_empty() {
+                let fingerprint = self.load_certificate_from_pem(trimmed)?;
+                tracing::info!(
+                    "Trusted server certificate for {} has fingerprint {}",
+                    profile.host,
+                    fingerprint
+                );
+            }
+        }
+
+        if let Some(path) = profile.options.get("certificate_path") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                let fingerprint = self.load_certificate_from_file(trimmed)?;
+                tracing::info!(
+                    "Loaded CA file '{}' for {} (fingerprint {})",
+                    trimmed,
+                    profile.host,
+                    fingerprint
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_certificate_from_pem(&mut self, pem: &str) -> Result<String> {
+        let data = pem.as_bytes();
+        let buf = unsafe {
+            bindings::NewBufFromMemory(data.as_ptr() as *const c_void, data.len() as bindings::UINT)
+        };
+        if buf.is_null() {
+            return Err(Error::FfiError {
+                message: "Failed to allocate certificate buffer".into(),
+            });
+        }
+
+        let x = unsafe { bindings::BufToX(buf, true) };
+        unsafe {
+            bindings::FreeBuf(buf);
+        }
+
+        if x.is_null() {
+            return Err(Error::FfiError {
+                message: "Failed to parse stored server certificate".into(),
+            });
+        }
+
+        self.add_certificate_to_trust_store(x)
+    }
+
+    fn load_certificate_from_file(&mut self, path: &str) -> Result<String> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err(Error::ConnectionFailed {
+                message: "Certificate path is empty".into(),
+            });
+        }
+
+        let path_c = CString::new(trimmed).map_err(|e| Error::ConnectionFailed {
+            message: format!("Invalid certificate path: {}", e),
+        })?;
+
+        let cert_ptr = unsafe { bindings::FileToX(path_c.as_ptr()) } as *mut X;
+        if cert_ptr.is_null() {
+            return Err(Error::ConnectionFailed {
+                message: format!("Failed to load certificate from {}", trimmed),
+            });
+        }
+
+        self.add_certificate_to_trust_store(cert_ptr)
+    }
+
+    fn add_certificate_to_trust_store(&mut self, x: *mut X) -> Result<String> {
+        if x.is_null() {
+            return Err(Error::FfiError {
+                message: "Certificate pointer is null".into(),
+            });
+        }
+
+        let fingerprint = Self::compute_certificate_fingerprint(x)?;
+        if self.trusted_certificates.contains(&fingerprint) {
+            unsafe {
+                bindings::FreeX(x as *mut c_void);
+            }
+            return Ok(fingerprint);
+        }
+
+        let cert = RPC_CERT { x };
+        let cert_box = memory::malloc_box(cert)?;
+        let cert_ptr = Box::into_raw(cert_box);
+        let added = unsafe { bindings::CtAddCa(self.client_handle, cert_ptr) };
+        unsafe {
+            let _ = Box::from_raw(cert_ptr);
+            bindings::FreeX(x as *mut c_void);
+        }
+
+        if added == 0 {
+            return Err(Error::FfiError {
+                message: "Failed to add certificate to trust store".into(),
+            });
+        }
+
+        self.trusted_certificates.insert(fingerprint.clone());
+        Ok(fingerprint)
+    }
+
+    fn compute_certificate_fingerprint(x: *mut X) -> Result<String> {
+        certificate_sha1_hex(x).ok_or_else(|| Error::FfiError {
+            message: "Certificate pointer is null or invalid".into(),
+        })
     }
 
     /// Validate connection parameters before attempting connection
@@ -397,7 +669,9 @@ impl SoftEtherClient {
                     });
                 }
             }
-            AuthMethod::NtDomain { username, password, .. } => {
+            AuthMethod::NtDomain {
+                username, password, ..
+            } => {
                 if username.trim().is_empty() {
                     return Err(Error::ConnectionFailed {
                         message: "Username is required for NT domain authentication".into(),
@@ -449,7 +723,10 @@ impl SoftEtherClient {
                 if addrs.next().is_some() {
                     "Server hostname resolves successfully".to_string()
                 } else {
-                    format!("Server hostname '{}' resolves but no addresses found for port {}", profile.host, profile.port)
+                    format!(
+                        "Server hostname '{}' resolves but no addresses found for port {}",
+                        profile.host, profile.port
+                    )
                 }
             }
             Err(e) => {
@@ -463,7 +740,10 @@ impl SoftEtherClient {
         let mut diagnostics = Vec::new();
 
         // Test basic TCP connectivity
-        diagnostics.push(format!("Testing TCP connection to {}:{}...", profile.host, profile.port));
+        diagnostics.push(format!(
+            "Testing TCP connection to {}:{}...",
+            profile.host, profile.port
+        ));
 
         // Try to establish a TCP connection (this won't do VPN handshake, just basic connectivity)
         match tokio::net::TcpStream::connect(format!("{}:{}", profile.host, profile.port)).await {
@@ -482,8 +762,10 @@ impl SoftEtherClient {
         // Try a basic HTTP request to see if it's an HTTP server
         match tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            tokio::net::TcpStream::connect(format!("{}:{}", profile.host, profile.port))
-        ).await {
+            tokio::net::TcpStream::connect(format!("{}:{}", profile.host, profile.port)),
+        )
+        .await
+        {
             Ok(Ok(mut stream)) => {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -495,14 +777,22 @@ impl SoftEtherClient {
                         Ok(n) if n > 0 => {
                             let response = String::from_utf8_lossy(&buffer[..n.min(200)]);
                             if response.contains("HTTP/") {
-                                diagnostics.push(format!("⚠️  Server responds to HTTP: {}", response.lines().next().unwrap_or("Unknown response")));
-                                diagnostics.push("   This might be a web server, not a VPN server!".to_string());
+                                diagnostics.push(format!(
+                                    "⚠️  Server responds to HTTP: {}",
+                                    response.lines().next().unwrap_or("Unknown response")
+                                ));
+                                diagnostics.push(
+                                    "   This might be a web server, not a VPN server!".to_string(),
+                                );
                             } else {
-                                diagnostics.push("✓ Server doesn't respond like HTTP (good for VPN)".to_string());
+                                diagnostics.push(
+                                    "✓ Server doesn't respond like HTTP (good for VPN)".to_string(),
+                                );
                             }
                         }
                         _ => {
-                            diagnostics.push("✓ No HTTP response (expected for VPN server)".to_string());
+                            diagnostics
+                                .push("✓ No HTTP response (expected for VPN server)".to_string());
                         }
                     }
                 }
@@ -544,15 +834,14 @@ impl SoftEtherClient {
         // In a full implementation, we'd store this, but for now we'll create a minimal one
         if let Some(profile) = &self.active_profile {
             // Create a minimal disconnect request
-            use crate::memory::strings;
             let account_name_wide = strings::rust_to_softether_wide(&profile.account_name)?;
 
             let disconnect_req = crate::bindings::RPC_CLIENT_CONNECT {
                 AccountName: account_name_wide,
             };
 
-            let disconnect_req = crate::memory::malloc_box(disconnect_req)
-                .map_err(|_| Error::FfiError {
+            let disconnect_req =
+                crate::memory::malloc_box(disconnect_req).map_err(|_| Error::FfiError {
                     message: "Failed to allocate disconnect request".into(),
                 })?;
 
@@ -636,7 +925,8 @@ impl SoftEtherClient {
 
         unsafe {
             // Allocate memory for the status structure
-            let status_size = std::mem::size_of::<crate::bindings::RPC_CLIENT_GET_CONNECTION_STATUS>();
+            let status_size =
+                std::mem::size_of::<crate::bindings::RPC_CLIENT_GET_CONNECTION_STATUS>();
             let status_mem = crate::memory::zero_malloc_raw(status_size)?;
 
             // Call CtGetAccountStatus
@@ -652,7 +942,8 @@ impl SoftEtherClient {
             }
 
             // Extract status information
-            let status_ptr = status_mem.as_typed_ptr::<crate::bindings::RPC_CLIENT_GET_CONNECTION_STATUS>();
+            let status_ptr =
+                status_mem.as_typed_ptr::<crate::bindings::RPC_CLIENT_GET_CONNECTION_STATUS>();
             let status = &*status_ptr;
 
             // Convert server name from C string to Rust string
@@ -689,7 +980,7 @@ impl SoftEtherClient {
     }
 
     /// Create a connection request structure for SoftEther FFI
-    fn create_connect_request(&self, profile: &VpnProfile) -> Result<crate::memory::RawMemory> {
+    fn create_connect_request(&self, account_name: &str) -> Result<crate::memory::RawMemory> {
         use crate::memory::strings;
 
         // Allocate raw memory for the RPC_CLIENT_CONNECT structure
@@ -697,7 +988,7 @@ impl SoftEtherClient {
         let raw_mem = crate::memory::malloc_raw(size)?;
 
         // Create the RPC_CLIENT_CONNECT structure and copy it into the allocated memory
-        let account_name_wide = strings::rust_to_softether_wide(&profile.account_name)?;
+        let account_name_wide = strings::rust_to_softether_wide(account_name)?;
         let connect_req = crate::bindings::RPC_CLIENT_CONNECT {
             AccountName: account_name_wide,
         };
@@ -706,7 +997,7 @@ impl SoftEtherClient {
             std::ptr::copy_nonoverlapping(
                 &connect_req as *const _ as *const u8,
                 raw_mem.as_ptr() as *mut u8,
-                size
+                size,
             );
         }
 
@@ -762,7 +1053,9 @@ impl Drop for SoftEtherClient {
             // Try to disconnect synchronously (best effort)
             if let Some(profile) = &self.active_profile {
                 use crate::memory::strings;
-                if let Ok(account_name_wide) = strings::rust_to_softether_wide(&profile.account_name) {
+                if let Ok(account_name_wide) =
+                    strings::rust_to_softether_wide(&profile.account_name)
+                {
                     let disconnect_req = crate::bindings::RPC_CLIENT_CONNECT {
                         AccountName: account_name_wide,
                     };
@@ -790,6 +1083,219 @@ impl Drop for SoftEtherClient {
 
 // Note: ConnectionRequest is now handled by the memory management system
 // and RPC_CLIENT_CONNECT structure from bindings.rs
+
+struct AccountGuard {
+    client_handle: *mut std::ffi::c_void,
+    delete_ptr: *mut RPC_CLIENT_DELETE_ACCOUNT,
+}
+
+impl AccountGuard {
+    fn new(
+        client_handle: *mut std::ffi::c_void,
+        account_name: &[u16; bindings::MAX_ACCOUNT_NAME_LEN + 1],
+    ) -> Result<Self> {
+        let mut request = RPC_CLIENT_DELETE_ACCOUNT {
+            AccountName: [0u16; bindings::MAX_ACCOUNT_NAME_LEN + 1],
+        };
+        request.AccountName.copy_from_slice(account_name);
+        let boxed = memory::malloc_box(request)?;
+        let ptr = Box::into_raw(boxed);
+
+        Ok(Self {
+            client_handle,
+            delete_ptr: ptr,
+        })
+    }
+}
+
+impl Drop for AccountGuard {
+    fn drop(&mut self) {
+        if !self.delete_ptr.is_null() {
+            unsafe {
+                bindings::CtDeleteAccount(self.client_handle, self.delete_ptr, false);
+                let _ = Box::from_raw(self.delete_ptr);
+            }
+            self.delete_ptr = ptr::null_mut();
+        }
+    }
+}
+
+fn certificate_sha1_hex(x: *mut X) -> Option<String> {
+    if x.is_null() {
+        return None;
+    }
+
+    let mut digest = [0u8; SHA1_SIZE];
+    unsafe {
+        bindings::GetXDigest(x, digest.as_mut_ptr(), true);
+    }
+
+    Some(
+        digest
+            .iter()
+            .map(|byte| format!("{:02X}", byte))
+            .collect::<Vec<_>>()
+            .join(""),
+    )
+}
+
+fn copy_to_c_buffer(buffer: &mut [c_char], value: &str) -> Result<()> {
+    let trimmed = value.trim();
+    let bytes = trimmed.as_bytes();
+
+    if bytes.len() >= buffer.len() {
+        return Err(Error::ConnectionFailed {
+            message: format!(
+                "Value '{}' is too long for a SoftEther field ({} bytes)",
+                trimmed,
+                buffer.len()
+            ),
+        });
+    }
+
+    for slot in buffer.iter_mut() {
+        *slot = 0;
+    }
+
+    for (idx, byte) in bytes.iter().enumerate() {
+        buffer[idx] = *byte as c_char;
+    }
+
+    Ok(())
+}
+
+fn certificate_to_pem(x: *mut X) -> Option<String> {
+    if x.is_null() {
+        return None;
+    }
+
+    let buf = unsafe { bindings::XToBuf(x, true) };
+    if buf.is_null() {
+        return None;
+    }
+
+    let size = unsafe { (*buf).Size as usize };
+    let data = unsafe { std::slice::from_raw_parts((*buf).Buf as *const u8, size) };
+    let pem = String::from_utf8_lossy(data).to_string();
+
+    unsafe {
+        bindings::FreeBuf(buf);
+    }
+
+    Some(pem)
+}
+
+fn format_cert_name(name: *mut NAME) -> Option<String> {
+    if name.is_null() {
+        return None;
+    }
+
+    let name_ref = unsafe { &*name };
+    let mut parts = Vec::new();
+
+    if let Some(value) = wide_ptr_to_string(name_ref.CommonName) {
+        parts.push(format!("CN={}", value));
+    }
+    if let Some(value) = wide_ptr_to_string(name_ref.Organization) {
+        parts.push(format!("O={}", value));
+    }
+    if let Some(value) = wide_ptr_to_string(name_ref.Unit) {
+        parts.push(format!("OU={}", value));
+    }
+    if let Some(value) = wide_ptr_to_string(name_ref.State) {
+        parts.push(format!("ST={}", value));
+    }
+    if let Some(value) = wide_ptr_to_string(name_ref.Local) {
+        parts.push(format!("L={}", value));
+    }
+    if let Some(value) = wide_ptr_to_string(name_ref.Country) {
+        parts.push(format!("C={}", value));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
+fn wide_ptr_to_string(ptr: *mut bindings::WCHAR) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    unsafe {
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len == 0 {
+            return None;
+        }
+        let slice = slice::from_raw_parts(ptr, len);
+        Some(String::from_utf16_lossy(slice))
+    }
+}
+
+unsafe extern "C" fn certificate_check_callback(
+    _session: *mut bindings::SESSION,
+    _connection: *mut bindings::CONNECTION,
+    server_x: *mut X,
+    expired: *mut bindings::SoftEtherBool,
+) -> bindings::SoftEtherBool {
+    if server_x.is_null() {
+        return 0;
+    }
+
+    if !expired.is_null() {
+        *expired = 0;
+    }
+
+    let subject = format_cert_name((*server_x).subject_name).unwrap_or_else(|| "Unknown".into());
+    let issuer = format_cert_name((*server_x).issuer_name).unwrap_or_else(|| "Unknown".into());
+    let fingerprint = certificate_sha1_hex(server_x).unwrap_or_else(|| "Unknown".into());
+    let pem = certificate_to_pem(server_x).unwrap_or_default();
+
+    let active_profile = certificate_prompt::current_profile();
+    let (profile_id, profile_name, host, port) = if let Some(info) = active_profile {
+        (Some(info.id), Some(info.name), info.host, info.port)
+    } else {
+        (None, None, String::new(), 0)
+    };
+
+    let (tx, rx) = mpsc::channel();
+    let prompt = certificate_prompt::CertificatePrompt {
+        profile_id,
+        profile_name,
+        host,
+        port,
+        subject,
+        issuer,
+        fingerprint,
+        pem,
+        expired: false,
+        response_tx: tx,
+    };
+
+    if certificate_prompt::dispatch_prompt(prompt).is_err() {
+        certificate_prompt::record_certificate_decision(CertificateDecision::Reject);
+        return 0;
+    }
+
+    match rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(decision) => {
+            certificate_prompt::record_certificate_decision(decision);
+            match decision {
+                CertificateDecision::TrustTemporarily | CertificateDecision::TrustPermanently => 1,
+                CertificateDecision::Reject => 0,
+            }
+        }
+        Err(_) => {
+            certificate_prompt::record_certificate_decision(CertificateDecision::Reject);
+            0
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -852,7 +1358,10 @@ mod tests {
         // Test string conversion utilities
         let test_str = "Test VPN Connection";
         let wide_result = memory::strings::rust_to_softether_wide(test_str);
-        assert!(wide_result.is_ok(), "Failed to convert string to wide format");
+        assert!(
+            wide_result.is_ok(),
+            "Failed to convert string to wide format"
+        );
 
         let wide_str = wide_result.unwrap();
         let back_to_rust = memory::strings::softether_wide_to_rust(&wide_str);
@@ -881,17 +1390,32 @@ mod tests {
     #[test]
     fn test_softether_error_mapping() {
         // Test SoftEther error code mapping
-        let connect_failed = crate::Error::from_softether_error(crate::bindings::error_codes::ERR_CONNECT_FAILED);
-        assert_eq!(connect_failed.to_string(), "SoftEther error code 1: Connection to the server has failed");
+        let connect_failed =
+            crate::Error::from_softether_error(crate::bindings::error_codes::ERR_CONNECT_FAILED);
+        assert_eq!(
+            connect_failed.to_string(),
+            "SoftEther error code 1: Connection to the server has failed"
+        );
 
-        let auth_failed = crate::Error::from_softether_error(crate::bindings::error_codes::ERR_AUTH_FAILED);
-        assert_eq!(auth_failed.to_string(), "SoftEther error code 9: Authentication failure");
+        let auth_failed =
+            crate::Error::from_softether_error(crate::bindings::error_codes::ERR_AUTH_FAILED);
+        assert_eq!(
+            auth_failed.to_string(),
+            "SoftEther error code 9: Authentication failure"
+        );
 
-        let hub_not_found = crate::Error::from_softether_error(crate::bindings::error_codes::ERR_HUB_NOT_FOUND);
-        assert_eq!(hub_not_found.to_string(), "SoftEther error code 8: The HUB does not exist");
+        let hub_not_found =
+            crate::Error::from_softether_error(crate::bindings::error_codes::ERR_HUB_NOT_FOUND);
+        assert_eq!(
+            hub_not_found.to_string(),
+            "SoftEther error code 8: The HUB does not exist"
+        );
 
         let unknown_error = crate::Error::from_softether_error(999);
-        assert_eq!(unknown_error.to_string(), "SoftEther error code 999: Unknown error");
+        assert_eq!(
+            unknown_error.to_string(),
+            "SoftEther error code 999: Unknown error"
+        );
     }
 
     #[test]
@@ -901,7 +1425,10 @@ mod tests {
 
         // Test initial state
         let profile = VpnProfile::default();
-        assert_eq!(ConnectionStatus::Disconnected, ConnectionStatus::Disconnected);
+        assert_eq!(
+            ConnectionStatus::Disconnected,
+            ConnectionStatus::Disconnected
+        );
 
         // Test state enum conversion
         let state = ConnectionState::Disconnected;

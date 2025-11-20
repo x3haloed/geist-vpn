@@ -53,7 +53,10 @@ impl VpnManager {
         let (response_tx, response_rx) = mpsc::channel();
 
         self.command_tx
-            .send(VpnCommand::Connect { profile, response_tx })
+            .send(VpnCommand::Connect {
+                profile,
+                response_tx,
+            })
             .map_err(|e| format!("Failed to send connect command: {}", e))?;
 
         response_rx
@@ -120,26 +123,27 @@ impl VpnManager {
         while let Ok(command) = command_rx.recv() {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 match command {
-                    VpnCommand::Connect { profile, response_tx } => {
+                    VpnCommand::Connect {
+                        profile,
+                        response_tx,
+                    } => {
                         tracing::info!("VPN manager: Connecting to {}", profile.name);
 
                         // Run the connect operation using the Tokio runtime
-                        let result = rt.block_on(async {
-                            client.connect(&profile).await
-                        });
+                        let result = rt.block_on(async { client.connect(&profile).await });
 
-                        let _ = response_tx.send(result.map_err(|e| format!("Connection failed: {}", e)));
+                        let _ = response_tx
+                            .send(result.map_err(|e| format!("Connection failed: {}", e)));
                     }
 
                     VpnCommand::Disconnect { response_tx } => {
                         tracing::info!("VPN manager: Disconnecting");
 
                         // Run the disconnect operation using the Tokio runtime
-                        let result = rt.block_on(async {
-                            client.disconnect().await
-                        });
+                        let result = rt.block_on(async { client.disconnect().await });
 
-                        let _ = response_tx.send(result.map_err(|e| format!("Disconnection failed: {}", e)));
+                        let _ = response_tx
+                            .send(result.map_err(|e| format!("Disconnection failed: {}", e)));
                     }
 
                     VpnCommand::GetStatus { response_tx } => {
@@ -147,27 +151,21 @@ impl VpnManager {
 
                         // Convert client status to UI status
                         let ui_status = match client_status {
-                            geist_vpn::client::ConnectionStatus::Disconnected => {
-                                ConnectionStatus {
-                                    connected: false,
-                                    profile_name: None,
-                                    status_message: "Disconnected".to_string(),
-                                }
-                            }
-                            geist_vpn::client::ConnectionStatus::Connecting => {
-                                ConnectionStatus {
-                                    connected: false,
-                                    profile_name: client.active_profile().map(|p| p.name.clone()),
-                                    status_message: "Connecting...".to_string(),
-                                }
-                            }
-                            geist_vpn::client::ConnectionStatus::Connected => {
-                                ConnectionStatus {
-                                    connected: true,
-                                    profile_name: client.active_profile().map(|p| p.name.clone()),
-                                    status_message: "Connected".to_string(),
-                                }
-                            }
+                            geist_vpn::client::ConnectionStatus::Disconnected => ConnectionStatus {
+                                connected: false,
+                                profile_name: None,
+                                status_message: "Disconnected".to_string(),
+                            },
+                            geist_vpn::client::ConnectionStatus::Connecting => ConnectionStatus {
+                                connected: false,
+                                profile_name: client.active_profile().map(|p| p.name.clone()),
+                                status_message: "Connecting...".to_string(),
+                            },
+                            geist_vpn::client::ConnectionStatus::Connected => ConnectionStatus {
+                                connected: true,
+                                profile_name: client.active_profile().map(|p| p.name.clone()),
+                                status_message: "Connected".to_string(),
+                            },
                             geist_vpn::client::ConnectionStatus::Disconnecting => {
                                 ConnectionStatus {
                                     connected: true,
@@ -175,13 +173,11 @@ impl VpnManager {
                                     status_message: "Disconnecting...".to_string(),
                                 }
                             }
-                            geist_vpn::client::ConnectionStatus::Error(msg) => {
-                                ConnectionStatus {
-                                    connected: false,
-                                    profile_name: None,
-                                    status_message: format!("Error: {}", msg),
-                                }
-                            }
+                            geist_vpn::client::ConnectionStatus::Error(msg) => ConnectionStatus {
+                                connected: false,
+                                profile_name: None,
+                                status_message: format!("Error: {}", msg),
+                            },
                         };
 
                         let _ = response_tx.send(ui_status);
@@ -191,9 +187,7 @@ impl VpnManager {
                         tracing::info!("VPN manager shutting down");
 
                         // Attempt to disconnect if connected
-                        let _ = rt.block_on(async {
-                            client.disconnect().await
-                        });
+                        let _ = rt.block_on(async { client.disconnect().await });
 
                         // Cleanup SoftEther
                         let _ = geist_vpn::cleanup();

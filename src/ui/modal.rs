@@ -1,8 +1,8 @@
-use iced::widget::{button, column, container, row, text, text_input, pick_list, Column};
-use iced::{Element, Length};
 use crate::Message;
+use iced::widget::{button, column, container, pick_list, row, text, text_input, Column};
+use iced::{Element, Length};
 
-use geist_vpn::profile::{VpnProfile, VpnProtocol, AuthMethod};
+use geist_vpn::profile::{AuthMethod, VpnProfile, VpnProtocol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMethodType {
@@ -65,13 +65,21 @@ impl Default for ProfileModalState {
 impl ProfileModalState {
     pub fn from_profile(profile: &VpnProfile) -> Self {
         let (auth_method_type, username, password) = match &profile.auth {
-            AuthMethod::Password { username, password } => (AuthMethodType::Password, username.clone(), password.clone()),
+            AuthMethod::Password { username, password } => {
+                (AuthMethodType::Password, username.clone(), password.clone())
+            }
             AuthMethod::Radius => (AuthMethodType::Radius, String::new(), String::new()),
-            AuthMethod::NtDomain { username, password, .. } => (AuthMethodType::NtDomain, username.clone(), password.clone()),
+            AuthMethod::NtDomain {
+                username, password, ..
+            } => (AuthMethodType::NtDomain, username.clone(), password.clone()),
             _ => (AuthMethodType::Password, String::new(), String::new()),
         };
 
-        let certificate_path = profile.options.get("certificate_path").unwrap_or(&String::new()).clone();
+        let certificate_path = profile
+            .options
+            .get("certificate_path")
+            .unwrap_or(&String::new())
+            .clone();
         Self {
             name: profile.name.clone(),
             host: profile.host.clone(),
@@ -109,9 +117,7 @@ impl ProfileModalState {
                     password: self.password.clone(),
                 }
             }
-            AuthMethodType::Radius => {
-                AuthMethod::Radius
-            }
+            AuthMethodType::Radius => AuthMethod::Radius,
             AuthMethodType::NtDomain => {
                 if self.username.is_empty() {
                     return Err("Username cannot be empty".to_string());
@@ -144,7 +150,10 @@ impl ProfileModalState {
 
         // Add certificate path if provided
         if !self.certificate_path.is_empty() {
-            profile.options.insert("certificate_path".to_string(), self.certificate_path.clone());
+            profile.options.insert(
+                "certificate_path".to_string(),
+                self.certificate_path.clone(),
+            );
         }
 
         // If editing, preserve the original ID
@@ -168,22 +177,30 @@ impl ProfileModalState {
         // Check auth-specific requirements
         match self.auth_method_type {
             AuthMethodType::Password => {
-                !self.username.is_empty() && !self.password.is_empty() && !self.account_name.is_empty()
+                !self.username.is_empty()
+                    && !self.password.is_empty()
+                    && !self.account_name.is_empty()
             }
             AuthMethodType::Radius => !self.account_name.is_empty(), // RADIUS needs account name
             AuthMethodType::NtDomain => {
-                !self.username.is_empty() && !self.password.is_empty() && !self.account_name.is_empty()
+                !self.username.is_empty()
+                    && !self.password.is_empty()
+                    && !self.account_name.is_empty()
             }
         }
     }
 }
 
 pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
-    let title = text(if state.editing { "Edit VPN Profile" } else { "Add VPN Profile" })
-        .size(20)
-        .style(|theme: &iced::Theme| iced::widget::text::Style {
-            color: Some(theme.palette().primary),
-        });
+    let title = text(if state.editing {
+        "Edit VPN Profile"
+    } else {
+        "Add VPN Profile"
+    })
+    .size(20)
+    .style(|theme: &iced::Theme| iced::widget::text::Style {
+        color: Some(theme.palette().primary),
+    });
 
     let name_input = text_input("Profile Name", &state.name)
         .on_input(|value| Message::ProfileModalUpdateName(value))
@@ -207,8 +224,8 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
         "Fetch Hubs"
     };
 
-    let mut fetch_button = button(text(fetch_button_label))
-        .style(|theme: &iced::Theme, status: iced::widget::button::Status| {
+    let mut fetch_button = button(text(fetch_button_label)).style(
+        |theme: &iced::Theme, status: iced::widget::button::Status| {
             let palette = theme.palette();
             iced::widget::button::Style {
                 background: Some(iced::Background::Color(
@@ -216,13 +233,14 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
                         palette.primary.scale_alpha(0.8)
                     } else {
                         palette.primary
-                    }
+                    },
                 )),
                 text_color: palette.text,
                 border: iced::Border::default().rounded(4.0),
                 ..Default::default()
             }
-        });
+        },
+    );
 
     if !state.fetching_hubs && !state.host.is_empty() && !state.port.is_empty() {
         fetch_button = fetch_button.on_press(Message::ProfileModalFetchHubs);
@@ -241,25 +259,22 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
                 },
                 |selection| Message::ProfileModalHubSelected(selection),
             )
-            .placeholder("Select Virtual Hub...")
+            .placeholder("Select Virtual Hub..."),
         )
     };
 
-    let mut hub_controls = column![
-        row![hub_input, fetch_button].spacing(8)
-    ]
-    .spacing(8);
+    let mut hub_controls = column![row![hub_input, fetch_button].spacing(8)].spacing(8);
 
     if let Some(picker) = hub_picker {
         hub_controls = hub_controls.push(picker);
     }
 
     if let Some(error) = &state.hub_fetch_error {
-        hub_controls = hub_controls.push(
-            text(error).size(12).style(|theme: &iced::Theme| iced::widget::text::Style {
+        hub_controls = hub_controls.push(text(error).size(12).style(|theme: &iced::Theme| {
+            iced::widget::text::Style {
                 color: Some(theme.palette().danger),
-            })
-        );
+            }
+        }));
     }
 
     let protocol_options = vec![
@@ -269,11 +284,9 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
         VpnProtocol::Sstp,
     ];
 
-    let protocol_picker = pick_list(
-        protocol_options,
-        Some(state.protocol.clone()),
-        |protocol| Message::ProfileModalUpdateProtocol(protocol),
-    )
+    let protocol_picker = pick_list(protocol_options, Some(state.protocol.clone()), |protocol| {
+        Message::ProfileModalUpdateProtocol(protocol)
+    })
     .placeholder("Select Protocol");
 
     let account_input = text_input("Account Name (Profile Alias)", &state.account_name)
@@ -310,9 +323,8 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
         .on_input(|value| Message::ProfileModalUpdateCertificatePath(value))
         .padding(8);
 
-    let cancel_button = button(text("Cancel"))
-        .on_press(Message::ModalClosed)
-        .style(|theme: &iced::Theme, status: iced::widget::button::Status| {
+    let cancel_button = button(text("Cancel")).on_press(Message::ModalClosed).style(
+        |theme: &iced::Theme, status: iced::widget::button::Status| {
             let palette = theme.palette();
             iced::widget::button::Style {
                 background: Some(iced::Background::Color(palette.background)),
@@ -324,15 +336,16 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
                 },
                 ..Default::default()
             }
-        });
+        },
+    );
 
     let save_button = button(text("Save Profile"))
         .on_press(Message::ProfileModalSave)
-        .style(|theme: &iced::Theme, status: iced::widget::button::Status| {
-            let palette = theme.palette();
-            iced::widget::button::Style {
-                background: Some(iced::Background::Color(
-                    if state.is_valid() {
+        .style(
+            |theme: &iced::Theme, status: iced::widget::button::Status| {
+                let palette = theme.palette();
+                iced::widget::button::Style {
+                    background: Some(iced::Background::Color(if state.is_valid() {
                         if status == iced::widget::button::Status::Hovered {
                             palette.primary.scale_alpha(0.8)
                         } else {
@@ -340,47 +353,61 @@ pub fn view<'a>(state: &'a ProfileModalState) -> Element<'a, Message> {
                         }
                     } else {
                         palette.background
-                    }
-                )),
-                text_color: if state.is_valid() {
-                    palette.text
-                } else {
-                    palette.text
-                },
-                border: iced::Border::default().rounded(4.0),
-                ..Default::default()
-            }
-        });
+                    })),
+                    text_color: if state.is_valid() {
+                        palette.text
+                    } else {
+                        palette.text
+                    },
+                    border: iced::Border::default().rounded(4.0),
+                    ..Default::default()
+                }
+            },
+        );
 
-    let button_row = row![
-        cancel_button,
-        save_button
-    ]
-    .spacing(8);
+    let button_row = row![cancel_button, save_button].spacing(8);
 
     let form = column![
-        row![text("Profile Name").size(14), name_input].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Server Host").size(14), host_input].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Port").size(14), port_input].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Virtual Hub").size(14), hub_controls].spacing(8).align_y(iced::Alignment::Start),
-        row![text("Protocol").size(14), protocol_picker].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Auth Method").size(14), auth_picker].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Username").size(14), username_input].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Password").size(14), password_input].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Certificate Path").size(14), certificate_input].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Account Name").size(14), account_input].spacing(8).align_y(iced::Alignment::Center),
-        row![text("Timeout").size(14), timeout_input].spacing(8).align_y(iced::Alignment::Center),
+        row![text("Profile Name").size(14), name_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Server Host").size(14), host_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Port").size(14), port_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Virtual Hub").size(14), hub_controls]
+            .spacing(8)
+            .align_y(iced::Alignment::Start),
+        row![text("Protocol").size(14), protocol_picker]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Auth Method").size(14), auth_picker]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Username").size(14), username_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Password").size(14), password_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Certificate Path").size(14), certificate_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Account Name").size(14), account_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        row![text("Timeout").size(14), timeout_input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
     ]
     .spacing(12);
 
-    let content = column![
-        title,
-        form,
-        button_row
-    ]
-    .spacing(16)
-    .padding(24)
-    .max_width(500.0);
+    let content = column![title, form, button_row]
+        .spacing(16)
+        .padding(24)
+        .max_width(500.0);
 
     container(content)
         .style(|theme: &iced::Theme| iced::widget::container::Style {

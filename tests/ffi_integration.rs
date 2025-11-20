@@ -298,10 +298,14 @@ async fn test_profile_manager() {
         profile::VpnProtocol::SslVpn,
     );
 
-    manager.save_profile(&profile).expect("Failed to save profile");
+    manager
+        .save_profile(&profile)
+        .expect("Failed to save profile");
 
     // Load and verify the profile
-    let loaded = manager.get_profile(&profile.id).expect("Failed to load profile");
+    let loaded = manager
+        .get_profile(&profile.id)
+        .expect("Failed to load profile");
     assert_eq!(loaded.name, profile.name);
     assert_eq!(loaded.host, profile.host);
     assert_eq!(loaded.port, profile.port);
@@ -311,7 +315,9 @@ async fn test_profile_manager() {
     assert!(!profiles.is_empty());
 
     // Clean up
-    manager.delete_profile(&profile.id).expect("Failed to delete profile");
+    manager
+        .delete_profile(&profile.id)
+        .expect("Failed to delete profile");
 }
 
 /// Integration test that attempts basic SoftEther operations

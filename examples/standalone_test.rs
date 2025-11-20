@@ -17,7 +17,9 @@ fn main() {
         println!("Step 3: Testing CtStartClient");
         println!("WARNING: This may crash with SIGSEGV...");
         geist_vpn::bindings::CtStartClient();
-        println!("✓ CtStartClient succeeded! (If you see this, the issue is test-environment specific)");
+        println!(
+            "✓ CtStartClient succeeded! (If you see this, the issue is test-environment specific)"
+        );
 
         println!("Step 4: CtStopClient");
         geist_vpn::bindings::CtStopClient();

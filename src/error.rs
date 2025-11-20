@@ -1,6 +1,5 @@
 //! Error types for the Geist VPN application
 
-
 /// Result type alias for Geist VPN operations
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -58,12 +57,16 @@ impl Error {
 
     /// Create an FFI error with the given message
     pub fn ffi_error<S: Into<String>>(message: S) -> Self {
-        Self::FfiError { message: message.into() }
+        Self::FfiError {
+            message: message.into(),
+        }
     }
 
     /// Create a connection error with the given message
     pub fn connection_error<S: Into<String>>(message: S) -> Self {
-        Self::ConnectionFailed { message: message.into() }
+        Self::ConnectionFailed {
+            message: message.into(),
+        }
     }
 
     /// Convert from a SoftEtherVPN error code
@@ -152,12 +155,16 @@ impl Error {
 
     /// Create a memory allocation error
     pub fn memory_error<S: Into<String>>(message: S) -> Self {
-        Self::MemoryError { message: message.into() }
+        Self::MemoryError {
+            message: message.into(),
+        }
     }
 
     /// Create a string encoding error
     pub fn encoding_error<S: Into<String>>(message: S) -> Self {
-        Self::EncodingError { message: message.into() }
+        Self::EncodingError {
+            message: message.into(),
+        }
     }
 }
 

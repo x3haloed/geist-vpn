@@ -54,7 +54,11 @@ fn main() {
         // Create new symlink (using relative path)
         #[cfg(unix)]
         std::os::unix::fs::symlink(&exe_path, &aout_link).unwrap_or_else(|e| {
-            panic!("Failed to create symlink a.out -> {}: {}", exe_path.display(), e);
+            panic!(
+                "Failed to create symlink a.out -> {}: {}",
+                exe_path.display(),
+                e
+            );
         });
     }
 

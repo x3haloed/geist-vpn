@@ -1,4 +1,5 @@
 //! FFI bindings for SoftEtherVPN
+#![allow(non_camel_case_types, non_snake_case)]
 //!
 //! This module contains the unsafe foreign function interface declarations
 //! for interacting with the SoftEtherVPN C libraries.
@@ -11,6 +12,8 @@ pub type UINT64 = u64;
 pub type UCHAR = u8;
 pub type SoftEtherBool = std::os::raw::c_uchar; // SoftEther uses UCHAR for bool
 
+pub type WCHAR = u16;
+
 // Maximum string lengths (from SoftEther constants)
 pub const MAX_ACCOUNT_NAME_LEN: usize = 127;
 pub const MAX_HOST_NAME_LEN: usize = 255;
@@ -21,6 +24,9 @@ pub const PROXY_MAX_USERNAME_LEN: usize = 255;
 pub const PROXY_MAX_PASSWORD_LEN: usize = 255;
 pub const SHA1_SIZE: usize = 20;
 pub const PROXY_DIRECT: u32 = 0;
+pub const MAX_USERNAME_LEN: usize = 63;
+pub const MAX_PASSWORD_LEN: usize = 255;
+pub const MAX_SECURE_DEVICE_FILE_LEN: usize = 260;
 
 // Memory management (SoftEther custom allocators)
 extern "C" {
@@ -58,10 +64,7 @@ extern "C" {
     pub fn CtStopClient();
 
     /// Connect to a VPN server
-    pub fn CtConnect(
-        client: *mut c_void,
-        connect_req: *mut RPC_CLIENT_CONNECT,
-    ) -> SoftEtherBool;
+    pub fn CtConnect(client: *mut c_void, connect_req: *mut RPC_CLIENT_CONNECT) -> SoftEtherBool;
 
     /// Disconnect from VPN server
     pub fn CtDisconnect(
@@ -87,10 +90,7 @@ extern "C" {
     ) -> bool;
 
     /// Enumerate accounts
-    pub fn CtEnumAccount(
-        client: *mut c_void,
-        accounts: *mut RPC_CLIENT_ENUM_ACCOUNT,
-    ) -> bool;
+    pub fn CtEnumAccount(client: *mut c_void, accounts: *mut RPC_CLIENT_ENUM_ACCOUNT) -> bool;
 
     /// Delete an account
     pub fn CtDeleteAccount(
@@ -100,10 +100,7 @@ extern "C" {
     ) -> bool;
 
     /// Get account details
-    pub fn CtGetAccount(
-        client: *mut c_void,
-        account_req: *mut RPC_CLIENT_GET_ACCOUNT,
-    ) -> bool;
+    pub fn CtGetAccount(client: *mut c_void, account_req: *mut RPC_CLIENT_GET_ACCOUNT) -> bool;
 
     /// Set account details
     pub fn CtSetAccount(
@@ -135,9 +132,14 @@ pub struct RPC_CLIENT_GET_CONNECTION_STATUS {
 
 #[repr(C)]
 pub struct RPC_CLIENT_CREATE_ACCOUNT {
-    // This is a complex structure, simplified for initial implementation
-    pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1],
-    // ... other fields to be added
+    pub ClientOption: *mut CLIENT_OPTION,
+    pub ClientAuth: *mut CLIENT_AUTH,
+    pub StartupAccount: bool,
+    pub CheckServerCert: bool,
+    pub RetryOnServerCert: bool,
+    pub AddDefaultCA: bool,
+    pub ServerCert: *mut X,
+    pub ShortcutKey: [u8; SHA1_SIZE],
 }
 
 #[repr(C)]
@@ -156,6 +158,51 @@ pub struct RPC_CLIENT_DELETE_ACCOUNT {
 pub struct RPC_CLIENT_GET_ACCOUNT {
     pub AccountName: [u16; MAX_ACCOUNT_NAME_LEN + 1],
     // ... other fields
+}
+
+#[repr(C)]
+pub struct RPC_CERT {
+    pub x: *mut X,
+}
+
+#[repr(C)]
+pub struct BUF {
+    pub Buf: *mut c_void,
+    pub Size: UINT,
+    pub SizeReserved: UINT,
+    pub Current: UINT,
+}
+
+#[repr(C)]
+pub struct NAME {
+    pub CommonName: *mut WCHAR,
+    pub Organization: *mut WCHAR,
+    pub Unit: *mut WCHAR,
+    pub Country: *mut WCHAR,
+    pub State: *mut WCHAR,
+    pub Local: *mut WCHAR,
+}
+
+#[repr(C)]
+pub struct X_SERIAL {
+    pub size: UINT,
+    pub data: *mut u8,
+}
+
+#[repr(C)]
+pub struct X {
+    pub x509: *mut c_void,
+    pub issuer_name: *mut NAME,
+    pub subject_name: *mut NAME,
+    pub root_cert: SoftEtherBool,
+    pub notBefore: UINT64,
+    pub notAfter: UINT64,
+    pub serial: *mut X_SERIAL,
+    pub do_not_free: SoftEtherBool,
+    pub is_compatible_bit: SoftEtherBool,
+    pub bits: UINT,
+    pub has_basic_constraints: SoftEtherBool,
+    pub issuer_url: [c_char; 256],
 }
 
 #[repr(C)]
@@ -216,6 +263,56 @@ impl Default for CLIENT_OPTION {
     fn default() -> Self {
         unsafe { std::mem::zeroed() }
     }
+}
+
+#[repr(C)]
+pub struct K {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct CONNECTION {
+    _private: [u8; 0],
+}
+
+pub const CLIENT_AUTHTYPE_ANONYMOUS: UINT = 0;
+pub const CLIENT_AUTHTYPE_PASSWORD: UINT = 1;
+pub const CLIENT_AUTHTYPE_PLAIN_PASSWORD: UINT = 2;
+pub const CLIENT_AUTHTYPE_CERT: UINT = 3;
+pub const CLIENT_AUTHTYPE_SECURE: UINT = 4;
+pub const CLIENT_AUTHTYPE_OPENSSLENGINE: UINT = 5;
+
+pub type CHECK_CERT_PROC = Option<
+    unsafe extern "C" fn(
+        session: *mut SESSION,
+        connection: *mut CONNECTION,
+        server_x: *mut X,
+        expired: *mut SoftEtherBool,
+    ) -> SoftEtherBool,
+>;
+
+pub type SECURE_SIGN_PROC = Option<
+    unsafe extern "C" fn(
+        session: *mut SESSION,
+        connection: *mut CONNECTION,
+        sign: *mut c_void,
+    ) -> SoftEtherBool,
+>;
+
+#[repr(C)]
+pub struct CLIENT_AUTH {
+    pub AuthType: UINT,
+    pub Username: [c_char; MAX_USERNAME_LEN + 1],
+    pub HashedPassword: [u8; SHA1_SIZE],
+    pub PlainPassword: [c_char; MAX_PASSWORD_LEN + 1],
+    pub ClientX: *mut X,
+    pub ClientK: *mut K,
+    pub SecurePublicCertName: [c_char; MAX_SECURE_DEVICE_FILE_LEN + 1],
+    pub SecurePrivateKeyName: [c_char; MAX_SECURE_DEVICE_FILE_LEN + 1],
+    pub OpensslEnginePrivateKeyName: [c_char; MAX_SECURE_DEVICE_FILE_LEN + 1],
+    pub OpensslEngineName: [c_char; MAX_SECURE_DEVICE_FILE_LEN + 1],
+    pub CheckCertProc: CHECK_CERT_PROC,
+    pub SecureSignProc: SECURE_SIGN_PROC,
 }
 
 #[repr(C)]
@@ -294,6 +391,49 @@ extern "C" {
 
     /// Free a token list
     pub fn FreeToken(tokens: *mut TOKEN_LIST);
+
+    /// Add CA certificate to the client trust store
+    pub fn CtAddCa(client: *mut c_void, cert: *mut RPC_CERT) -> SoftEtherBool;
+}
+
+extern "C" {
+    /// Free RPC_CLIENT_CREATE_ACCOUNT resources
+    pub fn CiFreeClientCreateAccount(account: *mut RPC_CLIENT_CREATE_ACCOUNT);
+
+    /// Free RPC_CLIENT_AUTH resources
+    pub fn CiFreeClientAuth(auth: *mut CLIENT_AUTH);
+}
+
+extern "C" {
+    /// Allocate a new BUF structure
+    pub fn NewBuf() -> *mut BUF;
+
+    /// Allocate a BUF from memory buffer
+    pub fn NewBufFromMemory(buf: *const c_void, size: UINT) -> *mut BUF;
+
+    /// Write raw bytes into BUF
+    pub fn WriteBuf(buf: *mut BUF, data: *const c_void, size: UINT);
+
+    /// Convert X to BUF
+    pub fn XToBuf(x: *mut X, text: bool) -> *mut BUF;
+
+    /// Convert BUF to X (PEM or DER)
+    pub fn BufToX(buf: *mut BUF, text: bool) -> *mut X;
+
+    /// Free BUF
+    pub fn FreeBuf(buf: *mut BUF);
+
+    /// Clone an X certificate
+    pub fn CloneX(x: *mut X) -> *mut X;
+
+    /// Get printable name from X
+    pub fn GetPrintNameFromX(buf: *mut WCHAR, size: UINT, x: *mut X);
+
+    /// Get verbose name from X
+    pub fn GetAllNameFromX(buf: *mut WCHAR, size: UINT, x: *mut X);
+
+    /// Compute digest for X (MD5 if sha1 false, SHA1 if true)
+    pub fn GetXDigest(x: *mut X, buf: *mut u8, sha1: bool);
 }
 
 // String utilities
@@ -328,6 +468,7 @@ pub fn softether_zero_malloc(size: UINT) -> Option<std::ptr::NonNull<c_void>> {
 }
 
 /// Safe wrapper for SoftEther free
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn softether_free(ptr: *mut c_void) {
     unsafe {
         Free(ptr);
